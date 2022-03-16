@@ -25,10 +25,12 @@ baldur in invoked with a reference fasta file for the mitochondria,
 and a BAM alignment file sorted in read order
 (i.e., as it comes from the mapper), but there are many options to
 allow specification of thresholds for base and mapping qualities,
-lists of rs ids, blacklists etc.
+lists of rs ids, blacklists etc.  A typical command line would be:
 
-``baldur --blacklist blacklist.txt --rs-list bed_chr_MT.bed.gz -M 30 -P 3 -T chrM.fa -o output input.bam``
+``baldur --rs-list bed_chr_MT.bed.gz -q20 -Q10 -M30 -P3 -T chrM.fa -o output input.bam``
 
-
+The above line would run baldur using `chrM.fa` as reference, readinf from `input.bam` and 
+generating an output file `output.vcf.gz`.  The other options set the MAPQ theshold to 20, the base quality threshold to 10, the maximum base quality to 30 (any quality above this will be set to 30), and the
+minimum size of a homopolymer to generate a warning filter to 3
 
 
