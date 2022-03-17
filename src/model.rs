@@ -3,11 +3,9 @@ use log::Level::Trace;
 use crate::stat_funcs::chisq1;
 
 pub const N_QUAL: usize = 64;
-const _MAX_PHRED: u8 = 40;
+const MAX_PHRED: u8 = 40;
 const MAX_ITER: usize = 5000;
 const ZERO_LIM: f64 = 1.0e-8;
-
-const MAX_PHRED: u8 = (N_QUAL as u8).min(_MAX_PHRED);
 
 // Convergence criteria for maximization iterations
 const CONVERGENCE_CRITERION: f64 = 1.0e-12;
