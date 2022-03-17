@@ -1,8 +1,5 @@
-use statrs::{
-   distribution::{ContinuousCDF, Normal},
-};
-
 use crate::model::N_QUAL;
+use crate::stat_funcs::erfc;
 
 pub fn mann_whitney(qcts: &[[usize; N_QUAL]], ix1: usize, ix2: usize) -> Option<f64> {
    // Calculate n1, n2, mean rank for group ix2, and sum of (t_k^3 - t_k) for tied ranks
@@ -34,12 +31,8 @@ pub fn mann_whitney(qcts: &[[usize; N_QUAL]], ix1: usize, ix2: usize) -> Option<
    let v = mu * (n + 1.0 - z_tie / (n * (n - 1.0))) / 6.0;
    if v > 0.0 {
       let z = (u - mu).abs() / v.sqrt();
-      if let Ok(norm) = Normal::new(0.0, 1.0) {
-         let p = 2.0 * (1.0 - norm.cdf(z));
-         Some(p)
-      } else {
-         None
-      }
+      let p = erfc(z / std::f64::consts::SQRT_2);
+      Some(p)
    } else {
       None
    }

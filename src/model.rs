@@ -1,11 +1,13 @@
-use statrs::distribution::{ChiSquared, ContinuousCDF};
 use nalgebra::{DVector, DMatrix};
 use log::Level::Trace;
+use crate::stat_funcs::chisq1;
 
 pub const N_QUAL: usize = 64;
-const MAX_PHRED: u8 = 40;
+const _MAX_PHRED: u8 = 40;
 const MAX_ITER: usize = 5000;
 const ZERO_LIM: f64 = 1.0e-8;
+
+const MAX_PHRED: u8 = (N_QUAL as u8).min(_MAX_PHRED);
 
 // Convergence criteria for maximization iterations
 const CONVERGENCE_CRITERION: f64 = 1.0e-12;
@@ -354,23 +356,21 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
    // To get standard errors for all non-zero frequency estimates we will add back in a parameter
    // with value 0 to the first position of index (and then remove it afterwards).
    if let Some(se) = se.take() {
- //     if n_active > 1 {
-         trace!("Obtaining SE estimates");
-         // Find an unused parameter
-         let k = flag.iter().enumerate().find(|(_, &fg)| fg == State::Out).map(|(ix, _)| ix).expect("Couldn't find place for dummy parameter");
-         // Swap with first parameter (index[0]); push the previous first parameter onto the back of index
-         let ix0 = index[0];
-         index[0] = k;
-         freq[k] = 0.0;
-         index.push(ix0);
-         // Update observation probabilities
-         calc_like(obs_set, freq, index);
-         // Calculate Fisher Information
-         let fi = &mut fisher_inf[..n_active];
-         let off = calc_fisher_inf(obs_set, index, fi);
-         calc_se(fi, off, se, index);
-         index[0] = index.pop().unwrap();
- //     }
+      trace!("Obtaining SE estimates");
+      // Find an unused parameter
+      let k = flag.iter().enumerate().find(|(_, &fg)| fg == State::Out).map(|(ix, _)| ix).expect("Couldn't find place for dummy parameter");
+      // Swap with first parameter (index[0]); push the previous first parameter onto the back of index
+      let ix0 = index[0];
+      index[0] = k;
+      freq[k] = 0.0;
+      index.push(ix0);
+      // Update observation probabilities
+      calc_like(obs_set, freq, index);
+      // Calculate Fisher Information
+      let fi = &mut fisher_inf[..n_active];
+      let off = calc_fisher_inf(obs_set, index, fi);
+      calc_se(fi, off, se, index);
+      index[0] = index.pop().unwrap();
       if log_enabled!(Trace) {
          for (&f, &s) in freq.iter().zip(se.iter()) { trace!("{:.6}\t{:.6}", f, s) }
       }
@@ -453,7 +453,6 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
 
       // If multiple alleles have been retained, calculate LR test for each such non-reference allele in turn
       if n_active > 1 {
-         let chi2 = ChiSquared::new(1.0).expect("Error obtaining Chi2");
          trace!("Obtaining LR ratios");
          let mut max_ph = 0;
          for &i in alls.iter() {
@@ -466,8 +465,8 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
                .filter(|&ix| *ix != i).copied().collect();
             let log_like1 = ml_estimation(&mut obs_set, &mut fq1, None, &mut alls1);
             let lr = (log_like - log_like1).max(0.0);
-            let ph = if lr < 30.0 {
-               ((1.0 - chi2.cdf(2.0 * lr)).log10() * -10.0).min(MAX_PHRED as f64).round() as u8
+            let ph = if lr < 13.0 { // A LR of 13 gives a phred score of >64, which is the maximum quality value we allow
+               ((chisq1(2.0 * lr).log10() * -10.0).round() as u8).min(MAX_PHRED)
             } else {
                MAX_PHRED
             };

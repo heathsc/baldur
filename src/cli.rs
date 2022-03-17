@@ -3,7 +3,6 @@ use std::{
    io::{self, BufRead, Error, ErrorKind},
 };
 
-use lazy_static::lazy_static;
 use regex::{Match, Regex};
 
 use clap::{Command, Arg, crate_version};
@@ -13,10 +12,6 @@ use r_htslib::{HtsFile, SamHeader};
 use super::io_err;
 use crate::reference::Reference;
 use crate::model::{setup_qual_model, N_QUAL};
-
-lazy_static! {
-    static ref RE_REGION: Regex = Regex::new(r#"^([^:]+):?([0-9,]+)?-?([0-9,]+)?"#).unwrap();
-}
 
 pub struct Region {
    tid: usize,
@@ -40,7 +35,8 @@ impl Region {
 
       let parse_x = |s: Match| parse_usize_with_commas(s.as_str());
 
-      if let Some(cap) = RE_REGION.captures(reg_str) {
+      let reg = Regex::new(r#"^([^:]+):?([0-9,]+)?-?([0-9,]+)?"#).unwrap();
+      if let Some(cap) = reg.captures(reg_str) {
          match (cap.get(1), cap.get(2), cap.get(3)) {
             (Some(c), None, None) => Self::new(c.as_str(), None, None, reference),
             (Some(c), Some(p), None) => Self::new(c.as_str(), parse_x(p), None, reference),
