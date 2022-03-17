@@ -10,7 +10,6 @@ const ZERO_LIM: f64 = 1.0e-8;
 // Convergence criteria for maximization iterations
 const CONVERGENCE_CRITERION: f64 = 1.0e-12;
 
-
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum State {
    In, Test, Out
@@ -454,20 +453,25 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
          trace!("Obtaining LR ratios");
          let mut max_ph = 0;
          for &i in alls.iter() {
-            // Zero the frequency for each retained allele in turn, rescaling the others
-            let z = 1.0 / (1.0 - freq[i]);
-            let mut fq1: Vec<_> = freq.iter().enumerate()
-               .map(|(k, &fq)| if k == i { 0.0 } else { fq * z }).collect();
+            // Check if we need to do calculate LR.  If the approximate Z test indicates a p value
+            // that corresponds with the phred score > N_QUAL then we simply set the phred to MAX_PHRED
+            let s = se[i];
+            assert!(s > 0.0);
+            let z = freq[i] / s;
+            let ph = if z < 5.0 {
+               // Zero the frequency for each retained allele in turn, rescaling the others
+               let z = 1.0 / (1.0 - freq[i]);
+               let mut fq1: Vec<_> = freq.iter().enumerate()
+                  .map(|(k, &fq)| if k == i { 0.0 } else { fq * z }).collect();
 
-            let mut alls1: Vec<usize> = alls.iter()
-               .filter(|&ix| *ix != i).copied().collect();
-            let log_like1 = ml_estimation(&mut obs_set, &mut fq1, None, &mut alls1);
-            let lr = (log_like - log_like1).max(0.0);
-            let ph = if lr < 13.0 { // A LR of 13 gives a phred score of >64, which is the maximum quality value we allow
-               ((chisq1(2.0 * lr).log10() * -10.0).round() as u8).min(MAX_PHRED)
-            } else {
-               MAX_PHRED
-            };
+               let mut alls1: Vec<usize> = alls.iter()
+                  .filter(|&ix| *ix != i).copied().collect();
+               let log_like1 = ml_estimation(&mut obs_set, &mut fq1, None, &mut alls1);
+               let lr = (log_like - log_like1).max(0.0);
+               if lr < 13.0 { // A LR of 13 gives a phred score of >64, which is the maximum quality value we allow
+                  ((chisq1(2.0 * lr).log10() * -10.0).round() as u8).min(MAX_PHRED)
+               } else { MAX_PHRED }
+            } else { MAX_PHRED };
             trace!("Allele {}\tFreq: {}\tLR: {}\tSE: {}", i, freq[i], ph, se[i]);
             all_res[i].lr_test = ph;
             all_res[i].freq = freq[i];
