@@ -48,29 +48,33 @@ impl <'a> AlignStore<'a> {
 
    pub(crate) fn in_region(&self) -> Option<usize> {
       let pos = self.pos % (self.target_size as isize);
-      if pos >= self.start as isize && pos < (self.start + self.seq.len() - 1) as isize {
+      if pos >= self.start as isize && pos < (self.start + self.seq.len()) as isize {
          Some((pos as usize) - self.start)
       } else { None }
    }
 
-   pub(crate) fn add(&mut self, src: &[(u8, u8, Context5)], ref_seq: &[RefPos], pw: &mut ProcWork) {
+   pub(crate) fn add(&mut self, src: &[(u8, u8, Context5)], ref_seq: &[RefPos], pw: &mut ProcWork) -> [usize; 2] {
 
       let is_del = |x: u8| x == b'-' || x == b'_' || x == b'^' || x == b'&';
 
-      for (i,(base, c, ctxt)) in src.iter().enumerate() {
+      let mut ct = [0; 2];
+      for (i, (base, c, ctxt)) in src.iter().enumerate() {
          if let Some(x) = self.in_region() {
             self.seq[x] = *base;
             self.qual[x] = *c >> 2;
             self.changed = true;
             let rpos = &ref_seq[x];
             let rb = rpos.base();
-            if ctxt.context3().is_some() && self.cfg.rs(x).is_none() {
-               let bs = *c & 3;
-               if rb < 4 {
+            let bs = *c & 3;
+            if rb < 4 {
+               let mm = if rb != bs { 1 } else { 0 };
+               if !is_del(*base) {
+                  ct[mm] += 1
+               }
+               if ctxt.context3().is_some() && self.cfg.rs(x).is_none() {
                   let q = (*c >> 2) as usize;
                   let ct = ctxt.context3().unwrap() as usize;
                   if !is_del(*base) {
-                     let mm = if rb != bs { 1 } else { 0 };
                      pw.qual_hist[q][mm] += 1;
                      pw.ctxt_hist[ct][q][mm] += 1;
                      // We don't count the last base of a series as a non-deletion as we can't tell if there will be a deletion on the next base
@@ -87,6 +91,7 @@ impl <'a> AlignStore<'a> {
          }
          self.pos += 1;
       }
+      ct
    }
 
    pub(crate) fn fill_to(&mut self, fill: u8, qual: u8, x: usize) {

@@ -53,6 +53,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
       let mut ins_allele = Vec::new();
       let mut ins_hash: HashMap<usize, (usize, u8)> = HashMap::new();
 
+      let mut tot_mm = [0; 2];
       for b in blst.iter() {
          let reverse = (b.flag() & BAM_FREVERSE) != 0;
          if b.qual() >= cfg.mapq_threshold() {
@@ -111,7 +112,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                } else {
                   [b'A', b'C', b'G', b'T', b'B', b'D', b'H', b'U']
                };
-               let (del, del_low, n) = if reverse { (b'_', b'^', b'n') } else { (b'-', b'&', b'N') };
+               let (del, del_low, n) = if reverse { (b'_', b'&', b'n') } else { (b'-', b'^', b'N') };
 
                let transform = |c: u8| {
                   match c >> 2 {
@@ -158,7 +159,9 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                               v.push((base, c1, *ctxt));
                            }
                         }
-                        align_store.add(&v, proc_work.ref_seq, proc_work);
+                        let ct = align_store.add(&v, proc_work.ref_seq, proc_work);
+                        tot_mm[0] += ct[0];
+                        tot_mm[1] += ct[1];
                      },
                      CigarOp::SoftClip => { it.nth(l - 1); },
                      CigarOp::Ins => {
@@ -192,7 +195,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                         let c1 = qual_cal(*c, 1, *ctxt);
                         let b = if (c1 >> 2) < qt { del_low } else { del };
                         let v = vec![(b, c1, **ctxt); l];
-                        align_store.add(&v, proc_work.ref_seq, proc_work)
+                        align_store.add(&v, proc_work.ref_seq, proc_work);
                      }
                      CigarOp::RefSkip => align_store.advance(l),
                      _ => (),
@@ -216,6 +219,12 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                write!(w, "\t{}", b.qname())?;
             }
             writeln!(w)?;
+         }
+         if let Some(b) = blst.get(0) {
+            let z = (tot_mm[1] as f64) / ((tot_mm[0] + tot_mm[1]) as f64);
+            if z >= 0.15 {
+               warn!("High mismatch rate for read {}\t{:.6}\t{}\t{}", b.qname(), z, tot_mm[0], tot_mm[1]);
+            }
          }
       }
    }

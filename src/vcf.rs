@@ -94,7 +94,7 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
          let mut ix1 = Vec::with_capacity(n_alls);
          ix1.push(ref_ix); // Reference allele;
          for &k in ix.iter() {
-            if cts[k][0] > 1 && cts[k][1] > 1 {
+            if cts[k][0] > 0 && cts[k][1] > 0 && cts[k][0] + cts[k][1] > 2 {
                ix1.push(k)
             }
          }
