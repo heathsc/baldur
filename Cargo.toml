@@ -11,6 +11,5 @@ stderrlog = "~0.5"
 clap = {version = "~3.1", features = ["cargo"]}
 libc = "~0.2"
 regex = "~1"
-nalgebra = "~0.27"
 r_htslib = { git = "https://github.com/heathsc/r_htslib.git" }
 compress_io = { git = "https://github.com/heathsc/compress_io.git" }

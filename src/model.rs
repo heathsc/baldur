@@ -1,4 +1,3 @@
-use nalgebra::{DVector, DMatrix};
 use log::Level::Trace;
 use crate::stat_funcs::chisq1;
 
@@ -38,6 +37,162 @@ struct ObsCount {
    cts: Vec<(f64, f64)>, // allele counts at this error level
 }
 
+/// Fisher information matrix.  The structure of the matrix for this problem is
+/// simpler than in the general case because all of the off diagonal elements are the same
+/// so we only store the diagonal elements and one off diagonal element
+///
+/// Due to this structure, the Cholesky decomposition of the matrix is also simplified
+/// and for a matrix of size n there are only n - 1 distinct off diagonal elements, so for
+/// a matrix of size 5 we have:
+///
+///
+///        | d1 0  0  0  0  |
+///        | a1 d2 0  0  0  |
+///    L = | a1 a2 d3 0  0  |
+///        | a1 a2 a3 d4 0  |
+///        | a1 a2 a3 a4 d5 |
+///
+/// To reduce allocations there is a common workspace that is shared between the original matrix
+/// and the decomposition
+///
+struct FisherInf {
+   work: Vec<f64>, // general workspace
+   off: f64, // off diagonal elements (all identical)
+   size: usize,
+   n: usize,
+}
+
+impl FisherInf {
+   pub fn new(n: usize) -> Self {
+      assert!(n > 0);
+      let sz = 4 * n - 1;
+      let work = vec!(0.0; sz);
+      Self {work, off: 0.0, n, size: n }
+   }
+
+   pub fn reset(&mut self, n: usize) {
+      if n > self.size {
+         self.work.reserve(n - self.size);
+         self.work.clear();
+         for _ in 0..n { self.work.push(0.0) }
+         self.size = n;
+      } else {
+         self.work.fill(0.0);
+      }
+      self.n = n;
+   }
+
+   // For setting original matrix
+   pub fn diag_mut(&mut self) -> &mut[f64] { &mut self.work[0..self.n] }
+   pub fn set_off(&mut self, x: f64) { self.off = x }
+
+   // Cholesky decomposition
+   pub fn calc_l(&mut self) {
+      let n = self.n;
+      let (diag, b) = self.work.split_at_mut(n);
+      let (l_diag, l_off) = b[n..3 * n - 1].split_at_mut(n);
+      let mut z = 0.0;
+      for (&d, l) in diag.iter().zip(l_diag.iter_mut().zip(l_off.iter_mut())) {
+         assert!(d > z, "Matrix not positive definite");
+         let p = (d - z).sqrt();
+         let x = (self.off - z) / p;
+         z += x * x;
+         *l.0 = p;
+         *l.1 = x;
+      }
+      l_diag[n - 1] = (diag[n - 1] - z).sqrt();
+   }
+
+   // Solve for a vector
+   pub fn solve(&mut self, b: &[f64]) -> &[f64] {
+      let mut z = 0.0;
+      let n = self.n;
+      let (work, ld) = self.work[n .. 4 * n - 1].split_at_mut(n);
+      let (l_diag, l_off) = ld.split_at(n);
+      for ((d, a), (b, wk)) in l_diag.iter().zip(l_off.iter()).zip(b.iter().zip(work.iter_mut())) {
+         *wk = (*b - z) / d;
+         z += *wk * a
+      }
+      let d = l_diag[n - 1];
+      work[n - 1] = (b[n - 1] - z) / (d * d);
+      z = work[n - 1];
+      for ((d, a),wk) in l_diag[0..n - 1].iter().zip(l_off.iter()).zip(work[0..n - 1].iter_mut()).rev() {
+         *wk = (*wk - z * a) / d;
+         z += *wk
+      }
+      work
+   }
+
+   /// Calculate parameter change vector.
+   /// `score` has on input the score vector S.
+   /// Returns a slice with the increment for the frequencies
+   fn calc_delta(&mut self, score: &[f64]) -> &[f64] {
+      // Compute S / J
+      let n = self.n;
+      match n {
+         0 => panic!("calc_delta called with empty score vector"),
+         1 => self.work[n] = score[0] / self.work[0], // 1D case
+         2 => {
+            // 2 x 2 case.
+            // Calculate determinant
+            let (diag, work) = self.work[.. 2 * n].split_at_mut(n);
+            let det = diag[0] * diag[1] - self.off * self.off;
+            // Off diagonal element of inverse of J
+            let off = -self.off / det;
+            // And put elements of S / J into score
+            let d0 = score[0] * diag[1] / det + score[1] * off;
+            let d1 = score[0] * off + score[1] * diag[0] / det;
+            work[0] = d0;
+            work[1] = d1;
+         },
+         _ => {
+            self.calc_l();
+            self.solve(score);
+         },
+      }
+      &self.work[n..2 * n]
+   }
+
+   // Get sqrt of diagonal elements of inverse
+   pub fn inverse_diag(&mut self) -> &[f64] {
+      let n = self.n;
+      let (work, ld) = self.work[n .. 4 * n - 1].split_at_mut(n);
+      let (l_diag, l_off) = ld.split_at(n);
+      for (i, d) in l_diag.iter().enumerate() {
+         work[i] = 1.0 / d;
+         for j in i + 1 .. n {
+            let sum = (i..j).fold(0.0, |s, k| s - l_off[k] * work[k]);
+            work[j] = sum / l_diag[j];
+         }
+         work[i] = (work[i..].iter().fold(0.0, |s, &x| s + x * x)).sqrt()
+      }
+      work
+   }
+
+
+   /// Calculate asymptotic standard errors for parameter estimates by inverting
+   /// Fisher information matrix supplied as the diagonal elements and one off-diagonal
+   /// element (as they are all identical for this problem
+   fn calc_se(&mut self) -> &[f64] {
+      let n = self.n;
+      match n {
+         0 => panic!("calc_se() called with too few parameters"),
+         1 => self.work[n] = (1.0 / self.work[0]).sqrt(),
+         2 => {
+            let (diag, work) = self.work[.. 2 * n].split_at_mut(n);
+            let det = diag[0] * diag[1] - self.off * self.off;
+            work[0] = (diag[1] / det).sqrt();
+            work[1] = (diag[0] / det).sqrt();
+         },
+         _ => {
+            self.calc_l();
+            self.inverse_diag();
+         },
+      }
+      &self.work[n..2 * n]
+   }
+}
+
 /// Collect vector of observations for quality values where at least one of the active alleles has observations
 fn collect_obs(qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_QUAL], counts: &mut [f64], index: &[usize]) -> Vec<ObsCount> {
    let mut flag = vec!(false; qcts.len());
@@ -65,7 +220,7 @@ fn collect_obs(qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_QUAL], counts: &mu
 
 /// Check list of active parameters.  Regenerate index and rescale frequencies if the
 /// number of active parameters has changed
-fn check_active_set(flag: &[State], index: &mut Vec<usize>, freq: &mut[f64]) -> usize {
+fn check_active_set(flag: &[State], index: &mut Vec<usize>, freq: &mut[f64], swap: bool) -> usize {
    let n_active = flag.iter().fold(0, |s, &st| if st != State::Out { s + 1 } else { s });
 
    if n_active != index.len() {
@@ -81,15 +236,17 @@ fn check_active_set(flag: &[State], index: &mut Vec<usize>, freq: &mut[f64]) -> 
          }
       }
       // Rescale frequencies
-      for fq in freq.iter_mut() {
-         *fq /= tot
+      if tot < 1.0 {
+         for fq in freq.iter_mut() {
+            *fq /= tot
+         }
       }
    }
 
    // If first allele in index is in State::Test, try and swap with another allele.
    // This is because first allele in index is not directly in model (as it is estimated as 1 - the sum of the
    // other frequencies) so it is harder to check the constraints
-   if flag[index[0]] == State::Test {
+   if swap && flag[index[0]] == State::Test {
       if let Some((i, &j)) = index[1..].iter().enumerate().find(|(_, &j)| flag[j] == State::In) {
          index[i + 1] = index[0];
          index[0] = j
@@ -122,12 +279,26 @@ fn calc_like(obs_set: &mut [ObsCount], freq: &[f64], index: &[usize]) -> f64 {
    like
 }
 
+/// Updates prob. values for each observation
+fn update_probs(obs_set: &mut [ObsCount], freq: &[f64], index: &[usize]) {
+   for obs in obs_set.iter_mut() {
+      let e = obs.e;
+      let ix0 = index[0];
+      let p0 = freq[ix0] * (1.0 - e) + (1.0 - freq[ix0]) * e;
+      obs.cts[ix0].1 = p0;
+      for &ix in index[1..].iter() {
+         let p = freq[ix] * (1.0 - e) + (1.0 - freq[ix]) * e;
+         obs.cts[ix].1 = p;
+      }
+   }
+}
+
 /// Updates prob. values for each observation and
 /// calculate score vector (vector of first partial derivatives of log likelihood)
 /// Returns current value of log likelihood
 fn calc_score_vec(obs_set: &mut [ObsCount], freq: &[f64], index: &[usize], score: &mut[f64]) -> f64 {
    let mut like = 0.0;
-   for sc in score[0..index.len() - 1].iter_mut() { *sc = 0.0 }
+   score[0..index.len() - 1].fill(0.0);
    for obs in obs_set.iter_mut() {
       let e = obs.e;
       let ix0 = index[0];
@@ -151,11 +322,31 @@ fn calc_score_vec(obs_set: &mut [ObsCount], freq: &[f64], index: &[usize], score
    like
 }
 
+fn calc_score_vec1(obs_set: &mut [ObsCount], freq: &[f64], index: &[usize], score: &mut[f64]) {
+   score[0..index.len() - 1].fill(0.0);
+   for obs in obs_set.iter_mut() {
+      let e = obs.e;
+      let ix0 = index[0];
+      let z = 1.0 - 2.0 * e;
+      let p0 = freq[ix0] * (1.0 - e) + (1.0 - freq[ix0]) * e;
+      let (cts, ps) = &mut obs.cts[ix0];
+      *ps = p0;
+      let konst0 = *cts / p0;
+      for (&ix, sc) in index[1..].iter().zip(score.iter_mut()) {
+         let p = freq[ix] * (1.0 - e) + (1.0 - freq[ix]) * e;
+         let (cts, ps) = &mut obs.cts[ix];
+         *ps = p;
+         *sc += z * (*cts / p - konst0);
+      }
+   }
+}
+
 /// Calculate Fisher Information matrix (Expected matrix of second derivatives)
 /// All off diagonal elements are the same, so we just calculate the diagonal
 /// and store in info_diag, and return the off diagonal element
-fn calc_fisher_inf(obs_set: &[ObsCount], index: &[usize], info_diag: &mut [f64]) -> f64 {
-   for elem in info_diag.iter_mut() { *elem = 0.0 }
+fn calc_fisher_inf(obs_set: &[ObsCount], index: &[usize], fi: &mut FisherInf) {
+   assert!(index.len() > 1);
+   fi.reset(index.len() - 1);
    let mut off = 0.0;
    for obs in obs_set.iter() {
       let e = obs.e;
@@ -164,76 +355,11 @@ fn calc_fisher_inf(obs_set: &[ObsCount], index: &[usize], info_diag: &mut [f64])
       let z = (1.0 - 2.0 * e) * (1.0 - 2.0 * e);
       let q0 = total / obs.cts[ix0].1;
       off += z * q0;
-      for (&ix, elem) in index[1..].iter().zip(info_diag.iter_mut()) {
+      for (&ix, elem) in index[1..].iter().zip(fi.diag_mut().iter_mut()) {
          *elem += z * (q0 +  total / obs.cts[ix].1);
       }
    }
-   off
-}
-
-/// Calculate parameter change vector.
-/// `info_diag` has on input the diagonal elements of the fisher information matrix J
-/// and on output has the change vector.
-/// `info_off` has the off diagonal elements (they are all identical).
-/// `score` has on input the score vector S
-fn calc_delta<'a>(info_diag: &'a mut [f64], info_off: f64, score: &[f64]) -> &'a [f64] {
-   // Compute S / J
-   match score.len() {
-      0 => panic!("calc_delta called with empty score vector"),
-      1 => info_diag[0] = score[0] / info_diag[0], // 1D case
-      2 => {
-         // 2 x 2 case.
-         // Calculate determinant
-         let det = info_diag[0] * info_diag[1] - info_off * info_off;
-         // Off diagonal element of inverse of J
-         let off = -info_off / det;
-         // And put elements of S / J into info_diag
-         let d0 = score[0] * info_diag[1] / det + score[1] * off;
-         let d1 = score[0] * off + score[1] * info_diag[0] / det;
-         info_diag[0] = d0;
-         info_diag[1] = d1;
-      },
-      n => {
-         // n x n case
-         let mut svec = DVector::from_column_slice(&score);
-         let jac = DMatrix::from_fn(n, n, |i, j| {
-            if i == j { info_diag[i] }
-            else { info_off }
-         });
-         let chol = jac.cholesky().expect("J not positive definite!");
-         chol.solve_mut(&mut svec);
-         for i in 0..n {
-            info_diag[i] = svec[i]
-         }
-      },
-   }
-   &info_diag[0..score.len()]
-}
-
-/// Calculate asymptotic standard errors for parameter estimates by inverting
-/// Fisher information matrix supplied as the diagonal elements and one off-diagonal
-/// element (as they are all identical for this problem
-fn calc_se(info_diag: &[f64], info_off: f64, se: &mut [f64], index: &[usize]) {
-   match info_diag.len() {
-      0 => panic!("calc_se() called with too few parameters"),
-      1 => se[index[1]] = (1.0 / info_diag[0]).sqrt(),
-      2 => {
-         let det = info_diag[0] * info_diag[1] - info_off * info_off;
-         se[index[1]] = (info_diag[1] / det).sqrt();
-         se[index[2]] = (info_diag[0] / det).sqrt();
-      },
-      n => {
-         let jac = DMatrix::from_fn(n, n, |i, j| {
-            if i == j { info_diag[i] }
-            else { info_off }
-         });
-         let chol = jac.cholesky().expect("J not positive definite!");
-         let vcov = chol.inverse();
-         for (&v, &ix) in vcov.diagonal().iter().zip(index[1..].iter()) {
-            se[ix] = v.sqrt()
-         }
-      },
-   }
+   fi.set_off(off);
 }
 
 /// Find ML estimates of allele frequencies using Fisher's scoring method
@@ -248,7 +374,7 @@ fn calc_se(info_diag: &[f64], info_off: f64, se: &mut [f64], index: &[usize]) {
 ///
 /// `se` at output has the asymptotic standard errors for the frequencies
 ///
-fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[f64]>, index: &mut Vec<usize>) -> f64 {
+fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[f64]>, index: &mut Vec<usize>, fisher_inf: &mut FisherInf) -> f64 {
 
    // (Maximum) number of parameters is one less than the number of active alleles (because the
    // frequencies of all active alleles have to sum to 1)
@@ -260,9 +386,6 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
    // Storage for score vector
    let mut score = vec!(0.0; np);
 
-   // Storage for Diagonal of Fisher Information matrix
-   let mut fisher_inf = vec!(0.0; np);
-
    // Storage for temporary frequency estimates
    let mut fq = vec!(0.0; n_all);
 
@@ -273,36 +396,36 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
    }
 
    // Main iteration loop
-   let mut n_active = check_active_set(&flag, index, freq); // Number of allele currently active in model
+   let mut n_active = check_active_set(&flag, index, freq, true); // Number of allele currently active in model
    let mut like: f64 = 0.0; // Current log likeihood
    for it in 0..MAX_ITER {
-      loop {
-         // Update observation probs.
-         like = calc_score_vec(obs_set, freq, index, &mut score[..n_active - 1]);
-         if n_active <= 1 { break }
+      // Update observation probs.
+      like = calc_score_vec(obs_set, freq, index, &mut score[..n_active - 1]);
+      if n_active <= 1 { break }
 
-         // If any of the alleles are in State::Test (which means that their current value os zero)
-         // Check to see if the relevant element of the score vector is negative.  If so then we
-         // know the maximum will be < 0, so we can remove the allele permanently from the model
-         let mut changed = false;
-         for (&ix, &d) in index[1..].iter().zip(score.iter()) {
-            if flag[ix] == State::Test && d < 0.0 {
-               flag[ix] = State::Out;
-               changed = true;
-            }
+      // If any of the alleles are in State::Test (which means that their current value os zero)
+      // Check to see if the relevant element of the score vector is negative.  If so then we
+      // know the maximum will be < 0, so we can remove the allele permanently from the model
+      let mut changed = false;
+      for (&ix, &d) in index[1..].iter().zip(score.iter()) {
+         if flag[ix] == State::Test && d < 0.0 {
+            flag[ix] = State::Out;
+            changed = true;
          }
-         if !changed { break }
+      }
+      if changed {
          // Update active set
-         n_active = check_active_set(&flag, index, freq);
+         n_active = check_active_set(&flag, index, freq, false);
+         calc_score_vec1(obs_set, freq, index, &mut score[..n_active - 1]);
       }
       trace!("like: {}, n_active = {}, np = {}", like, n_active, np);
       if n_active <= 1 { break }
 
       // Calculate Fisher information matrix
-      let off = calc_fisher_inf(obs_set, index, &mut fisher_inf[..n_active - 1]);
+      calc_fisher_inf(obs_set, index, fisher_inf);
 
       // Calculate update vector for frequencies
-      let delta = calc_delta(&mut fisher_inf[..n_active - 1], off, &score[..n_active - 1]);
+      let delta = fisher_inf.calc_delta( &score[..n_active - 1]);
 
       // Find largest values between 0 and 1 for alpha where freq + alpha * delta is >=0
       // for all frequencies
@@ -318,7 +441,7 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
          if like < like1 {
             alpha *= 0.5
          } else {
-            for (&f, fp) in fq.iter().zip(freq.iter_mut()) { *fp = f }
+            freq.clone_from_slice(&fq);
             break
          }
       }
@@ -346,7 +469,7 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
       }
       if changed {
          // Update active set
-         n_active = check_active_set(&flag, index, freq);
+         n_active = check_active_set(&flag, index, freq, true);
       } else if like - like1 < CONVERGENCE_CRITERION { break }
    }
 
@@ -362,11 +485,13 @@ fn ml_estimation(obs_set: &mut [ObsCount], freq: &mut[f64], mut se: Option<&mut[
       freq[k] = 0.0;
       index.push(ix0);
       // Update observation probabilities
-      calc_like(obs_set, freq, index);
+      update_probs(obs_set, freq, index);
       // Calculate Fisher Information
-      let fi = &mut fisher_inf[..n_active];
-      let off = calc_fisher_inf(obs_set, index, fi);
-      calc_se(fi, off, se, index);
+      calc_fisher_inf(obs_set, index, fisher_inf);
+      let vc = fisher_inf.calc_se();
+      for (&ix, &z) in index[1..].iter().zip(vc.iter()) {
+         se[ix] = z
+      }
       index[0] = index.pop().unwrap();
       if log_enabled!(Trace) {
          for (&f, &s) in freq.iter().zip(se.iter()) { trace!("{:.6}\t{:.6}", f, s) }
@@ -417,9 +542,6 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
    // Sanity checks
    assert!(n_active > 0 && n_active <= n_alls && alls.iter().all(|&i| i < n_alls));
 
-   // Make local copy of alls
-   let mut alls = alls.to_vec();
-
    // If all alleles are in alls, add a dummy allele for the estimation of s.e.
    if n_active == n_alls { n_alls += 1 }
 
@@ -433,6 +555,12 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
    } else {
       // Multiple alleles
 
+      // Make local copy of alls
+      let mut alls = alls.to_vec();
+
+      // Storage for Fisher information matrix + associated working storage
+      let mut fisher_inf = FisherInf::new(n_alls);
+
       // Make list of all required values for the iterations
       let mut counts = vec!(0.0; n_alls);
       let mut obs_set = collect_obs(qcts, qual_model, &mut counts, &alls);
@@ -444,7 +572,7 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
       let mut se = vec!(0.0; n_alls);
 
       trace!("Initial ML maximization");
-      let log_like = ml_estimation(&mut obs_set, &mut freq, Some(&mut se), &mut alls);
+      let log_like = ml_estimation(&mut obs_set, &mut freq, Some(&mut se), &mut alls, &mut fisher_inf);
 
       let n_active = alls.len();
 
@@ -466,7 +594,7 @@ pub fn freq_mle(alls: &[usize], qcts: &[[usize; N_QUAL]], qual_model: &[f64; N_Q
 
                let mut alls1: Vec<usize> = alls.iter()
                   .filter(|&ix| *ix != i).copied().collect();
-               let log_like1 = ml_estimation(&mut obs_set, &mut fq1, None, &mut alls1);
+               let log_like1 = ml_estimation(&mut obs_set, &mut fq1, None, &mut alls1, &mut fisher_inf);
                let lr = (log_like - log_like1).max(0.0);
                if lr < 13.0 { // A LR of 13 gives a phred score of >64, which is the maximum quality value we allow
                   ((chisq1(2.0 * lr).log10() * -10.0).round() as u8).min(MAX_PHRED)
