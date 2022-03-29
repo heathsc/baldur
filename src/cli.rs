@@ -328,10 +328,10 @@ fn read_qual_calib(file: &str, max_qual: u8) -> io::Result<[[[u8; 2]; N_QUAL]; N
 }
 
 pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
-   let m = Command::new("ont_align_view")
+   let m = Command::new("baldur")
       .version(crate_version!())
       .author("Simon Heath")
-      .about("Visualize ONT alignments in a given genomic region")
+      .about("Call sequence variants from mitochondrial ONT data")
       .arg(
          Arg::new("loglevel")
             .short('l')
