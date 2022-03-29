@@ -64,9 +64,14 @@ Baldur is invoked with a reference fasta file for the mitochondria,
 and a BAM alignment file sorted in read order
 (i.e., as it comes from the mapper), but there are many options to
 allow specification of thresholds for base and mapping qualities,
-lists of rs ids, blacklists etc.  A typical command line would be:
-
-``baldur --rs-list bed_chr_MT.bed.gz -q20 -Q10 -M30 -P3 -T chrM.fa -o output input.bam``
+lists of rs ids, blacklists etc. A minimal command line invocation would therefore be:
+```
+baldur -T chrM.fa.gz in.bam
+```
+And a more typical command line showing multiple options would be:
+```
+baldur --rs-list bed_chr_MT.bed.gz -q20 -Q10 -M30 -P3 -T chrM.fa -o output input.bam
+```
 
 The above line would run baldur using `chrM.fa` as reference, reading from `input.bam` and 
 generating an output file `output.vcf.gz`.  The other options set the MAPQ theshold to 20, the base quality threshold to 10, the maximum base quality to 30 (any quality above this will be set to 30), and the
@@ -107,7 +112,16 @@ Baldur has many command line options for controlling the operation of the callin
 |       | view          | Generate pileup view file|                |
 |       | no-call              | Do not perform variant calling                              |                |
 
-## <a name="overview"></a>Overview
+## <a name="overview"></a>Overview of workflow
+
+- Read in alignments filtering on region and MAPQ
+- Generate internal pileup representation of all reads
+- Output pileup view if required
+- Output sequencing depth report
+- Estimate single site allele frequencies (SNVs and indels)
+- Identify long deletions
+- Merge consecutive short indels and estimate multisite allele frequencies
+- Generate VCF
 
 ## <a name="changes"></a>Changes
 
