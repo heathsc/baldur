@@ -332,16 +332,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
       .version(crate_version!())
       .author("Simon Heath")
       .about("Call sequence variants from mitochondrial ONT data")
-      .arg(
-         Arg::new("loglevel")
-            .short('l')
-            .long("loglevel")
-            .takes_value(true)
-            .value_name("LOGLEVEL")
-            .help("Set log level")
-            .possible_values(&["none", "error", "warn", "info", "debug", "trace"])
-            .ignore_case(true),
-      )
+      .next_help_heading("Filtering")
       .arg(
          Arg::new("mapq_threshold")
             .short('q')
@@ -355,7 +346,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
          Arg::new("max_qual")
             .short('M')
             .long("max-qual")
-            .default_value("40")
+            .default_value("30")
             .takes_value(true)
             .value_name("QUAL")
             .help("Quality values are capped at this value"),
@@ -364,7 +355,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
          Arg::new("max_indel_qual")
             .short('I')
             .long("max-indel-qual")
-            .default_value("40")
+            .default_value("20")
             .takes_value(true)
             .value_name("QUAL")
             .help("Quality values for indels are capped at this value"),
@@ -383,7 +374,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .long("indel-thresholds")
             .number_of_values(2)
             .require_value_delimiter(true)
-            .default_values(&["0.1", "0.2"])
+            .default_values(&["0.025", "0.1"])
             .value_name("FREQ")
             .help("Indels with freq below first value (hard limit) are not reported, and below second value (soft limit) have a low_freq warning"),
       )
@@ -406,38 +397,6 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .help("Minimum size of homopolymer runs flagged as problematic"),
       )
       .arg(
-         Arg::new("region")
-            .short('r')
-            .long("region")
-            .takes_value(true)
-            .value_name("REGION")
-            .help("Genomic region to consider"),
-      )
-      .arg(
-         Arg::new("reference")
-            .short('T')
-            .long("reference")
-            .takes_value(true)
-            .required(true)
-            .value_name("FASTA File")
-            .help("Reference FASTA file"),
-      )
-      .arg(
-         Arg::new("sample")
-            .short('n')
-            .long("sample")
-            .takes_value(true)
-            .value_name("NAME")
-            .help("Sample name (for VCF file)"),
-      )
-      .arg(
-         Arg::new("blacklist")
-            .long("blacklist")
-            .takes_value(true)
-            .value_name("BED file")
-            .help("BED file with list of blacklisted sites"),
-      )
-      .arg(
          Arg::new("qual_calib")
             .hide(true)
             .long("qual-calib")
@@ -446,12 +405,14 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .help("File with quality calibration estimates"),
       )
       .arg(
-         Arg::new("rs_list")
-            .long("rs-list")
+         Arg::new("small_deletion_limit")
+            .long("small-deletion-limit")
             .takes_value(true)
-            .value_name("BED file")
-            .help("BED file with dbSNP rs identifiers"),
+            .value_name("SIZE")
+            .default_value("64")
+            .help("Maximum size for a small (explicit) deletion"),
       )
+      .next_help_heading("Operation")
       .arg(
          Arg::new("adjust")
             .short('a')
@@ -462,24 +423,52 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .help("Adjustment to genomic position"),
       )
       .arg(
-         Arg::new("small_deletion_limit")
-            .long("small-deletion-limit")
+         Arg::new("region")
+            .short('r')
+            .long("region")
             .takes_value(true)
-            .value_name("SIZE")
-            .default_value("64")
-            .help("Maximum size for a small (explicit) deletion"),
+            .value_name("REGION")
+            .help("Genomic region to consider"),
+      )
+      .next_help_heading("Input/Output")
+      .arg(
+         Arg::new("reference")
+            .short('T')
+            .long("reference")
+            .takes_value(true)
+            .required(true)
+            .value_name("FASTA File")
+            .help("Reference FASTA file"),
       )
       .arg(
-         Arg::new("paired_end")
-            .long("paired-end")
-            .hide(true)
-            .help("Illumina paired end reads"),
+         Arg::new("rs_list")
+            .long("rs-list")
+            .takes_value(true)
+            .value_name("BED file")
+            .help("BED file with dbSNP rs identifiers"),
+      )
+      .arg(
+         Arg::new("blacklist")
+            .long("blacklist")
+            .takes_value(true)
+            .value_name("BED file")
+            .help("BED file with list of blacklisted sites"),
+      )
+      .arg(
+         Arg::new("loglevel")
+            .short('l')
+            .long("loglevel")
+            .takes_value(true)
+            .value_name("LOGLEVEL")
+            .help("Set log level")
+            .possible_values(&["none", "error", "warn", "info", "debug", "trace"])
+            .ignore_case(true),
       )
       .arg(
          Arg::new("output_prefix")
             .short('o')
             .long("output-prefix")
-            .default_value("ont-align-view")
+            .default_value("baldur")
             .takes_value(true)
             .value_name("PREFIX")
             .help("Output prefix"),
@@ -502,10 +491,24 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .help("Output quality calibration values"),
       )
       .arg(
+         Arg::new("sample")
+            .short('n')
+            .long("sample")
+            .takes_value(true)
+            .value_name("NAME")
+            .help("Sample name (for VCF file)"),
+      )
+      .arg(
          Arg::new("input")
             .takes_value(true)
             .value_name("INPUT")
             .help("Input SAM/BAM/CRAM file(s)"),
+      )
+      .arg(
+         Arg::new("paired_end")
+            .long("paired-end")
+            .hide(true)
+            .help("Illumina paired end reads"),
       )
       .get_matches();
 
