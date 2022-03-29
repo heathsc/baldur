@@ -21,6 +21,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
    let reg = cfg.region();
    let qt = cfg.qual_threshold();
    let max_qual = cfg.max_qual();
+   let max_indel_qual = cfg.max_indel_qual();
    let pe = cfg.paired_end();
 
    let fg = blst[0].flag() & BAM_FREVERSE;
@@ -122,19 +123,19 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                   }
                };
 
-               let chk_max = |c: &u8| {
+               let chk_max = |c: &u8, mq: u8| {
                   let q = *c >> 2;
-                  if q > max_qual && q != 61 {
-                     (max_qual << 2) | (*c & 3)
+                  if q > mq && q != 61 {
+                     (mq << 2) | (*c & 3)
                   } else {
                      *c
                   }
                };
 
-               let qual_cal = |c: &u8, ix: usize, ctx: &Context5| match (cfg.have_qual_calib(), ctx.context3()) {
-                  (false, _) | (_, None) => chk_max(c),
+               let qual_cal = |c: &u8, mq: u8, ix: usize, ctx: &Context5| match (cfg.have_qual_calib(), ctx.context3()) {
+                  (false, _) | (_, None) => chk_max(c, mq),
                   (true, Some(ct)) => cfg.qual_calib(ct, *c >> 2)
-                     .map(|x| (*c & 3) | (x[ix] << 2)).unwrap_or_else(|| chk_max(c)),
+                     .map(|x| (*c & 3) | (x[ix] << 2)).unwrap_or_else(|| chk_max(c, mq)),
                };
 
                let mut prev_base: Option<(u8, Context5)> = None;
@@ -151,7 +152,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                         } else { false };
                         for k in 0..l {
                            let (c, ctxt) = it.next().expect("Mismatch between Cigar and sequence");
-                           let c1 = qual_cal(c, 0, ctxt);
+                           let c1 = qual_cal(c, max_qual,0, ctxt);
                            if ins && k == l - 1 {
                               prev_base = Some((c1, *ctxt));
                            } else {
@@ -173,7 +174,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                            ins_allele.push(pbase & 3);
                            for _ in 0..l {
                               let (c, ctxt) = it.next().expect("Mismatch between Cigar and sequence");
-                              let c1 = qual_cal(c, 0, ctxt);
+                              let c1 = qual_cal(c, max_indel_qual, 0, ctxt);
                               min_q = min_q.min(c1 >> 2);
                               ins_allele.push(c1 & 3);
                            }
@@ -192,7 +193,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
                      },
                      CigarOp::Del => {
                         let (c, ctxt) = it.peek().expect("Mismatch between Cigar and sequence");
-                        let c1 = qual_cal(*c, 1, *ctxt);
+                        let c1 = qual_cal(*c, max_indel_qual, 1, *ctxt);
                         let b = if (c1 >> 2) < qt { del_low } else { del };
                         let v = vec![(b, c1, **ctxt); l];
                         align_store.add(&v, proc_work.ref_seq, proc_work);
@@ -222,7 +223,8 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
          }
          if let Some(b) = blst.get(0) {
             let z = (tot_mm[1] as f64) / ((tot_mm[0] + tot_mm[1]) as f64);
-            if z >= 0.15 {
+//            println!("{}\t{:.6}\t{}\t{}", b.qname(), z, tot_mm[0], tot_mm[1]);
+            if z >= 0.1 {
                warn!("High mismatch rate for read {}\t{:.6}\t{}\t{}", b.qname(), z, tot_mm[0], tot_mm[1]);
             }
          }

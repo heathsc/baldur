@@ -22,9 +22,9 @@ pub fn pnorm(z: f64) -> f64 {
 }
 
 /// Upper tail of standard normal
-// pub fn pnormc(z: f64) -> f64 {
-//    0.5 * erfc(z / SQRT_2)
-// }
+pub fn pnormc(z: f64) -> f64 {
+    0.5 * erfc(z / SQRT_2)
+}
 
 /// Upper tail of chi-squared prob. of x with 1df
 pub fn chisq1(x: f64) -> f64 {

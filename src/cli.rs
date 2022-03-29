@@ -117,6 +117,7 @@ pub struct Config {
    output_prefix: Box<str>,
    sample: Option<Box<str>>,
    adjust: usize,
+   small_deletion_limit: usize,
    blacklist: Option<HashSet<usize>>,
    qual_calib: Option<[[[u8; 2]; N_QUAL] ;N_QUAL]>,
    rs: Option<HashMap<usize, Box<str>>>,
@@ -126,6 +127,7 @@ pub struct Config {
    mapq_threshold: u8,
    qual_threshold: u8,
    max_qual: u8,
+   max_indel_qual: u8,
    homopolymer_limit: u8,
    paired_end: bool,
    no_call: bool,
@@ -154,9 +156,9 @@ impl Config {
       self.indel_thresholds[ t.idx() ]
    }
 
-   pub fn max_qual(&self) -> u8 {
-      self.max_qual
-   }
+   pub fn max_qual(&self) -> u8 { self.max_qual }
+
+   pub fn max_indel_qual(&self) -> u8 { self.max_indel_qual }
 
    pub fn homopolymer_limit(&self) -> u8 {
       self.homopolymer_limit
@@ -190,6 +192,10 @@ impl Config {
 
    pub fn adjust(&self) -> usize {
       self.adjust
+   }
+
+   pub fn small_deletion_limit(&self) -> usize {
+      self.small_deletion_limit
    }
 
    pub fn reference(&self) -> &Reference {
@@ -348,11 +354,20 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
       .arg(
          Arg::new("max_qual")
             .short('M')
-            .long("max_qual")
+            .long("max-qual")
             .default_value("40")
             .takes_value(true)
             .value_name("QUAL")
             .help("Quality values are capped at this value"),
+      )
+      .arg(
+         Arg::new("max_indel_qual")
+            .short('I')
+            .long("max-indel-qual")
+            .default_value("40")
+            .takes_value(true)
+            .value_name("QUAL")
+            .help("Quality values for indels are capped at this value"),
       )
       .arg(
          Arg::new("snv_thresholds")
@@ -447,9 +462,17 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             .help("Adjustment to genomic position"),
       )
       .arg(
+         Arg::new("small_deletion_limit")
+            .long("small-deletion-limit")
+            .takes_value(true)
+            .value_name("SIZE")
+            .default_value("64")
+            .help("Maximum size for a small (explicit) deletion"),
+      )
+      .arg(
          Arg::new("paired_end")
-            .short('p')
             .long("paired-end")
+            .hide(true)
             .help("Illumina paired end reads"),
       )
       .arg(
@@ -490,11 +513,13 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
 
    let mapq_threshold: u8 = m.value_of_t("mapq_threshold").unwrap();
    let max_qual: u8 = m.value_of_t("max_qual").map(|x: u8| x.min((N_QUAL - 1) as u8)).unwrap();
+   let max_indel_qual: u8 = m.value_of_t("max_indel_qual").map(|x: u8| x.min(max_qual)).unwrap();
    let qual_threshold: u8 = m.value_of_t("qual_threshold").map(|x: u8| x.min(max_qual)).unwrap();
    let qual_table = setup_qual_model();
 
    let homopolymer_limit: u8 = m.value_of_t("homopolymer_limit").unwrap();
    let adjust: usize = m.value_of_t("adjust").unwrap();
+   let small_deletion_limit: usize = m.value_of_t("small_deletion_limit").unwrap();
    let paired_end = m.is_present("paired_end");
    let no_call = m.is_present("no_call");
    let view = m.is_present("view");
@@ -583,6 +608,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
          region,
          reference,
          adjust,
+         small_deletion_limit,
          blacklist,
          qual_calib,
          rs,
@@ -593,6 +619,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
          homopolymer_limit,
          qual_table,
          max_qual,
+         max_indel_qual,
          paired_end,
          no_call,
          output_qual_calib,

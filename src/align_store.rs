@@ -58,6 +58,7 @@ impl <'a> AlignStore<'a> {
       let is_del = |x: u8| x == b'-' || x == b'_' || x == b'^' || x == b'&';
 
       let mut ct = [0; 2];
+      let qt = self.cfg.qual_threshold();
       for (i, (base, c, ctxt)) in src.iter().enumerate() {
          if let Some(x) = self.in_region() {
             self.seq[x] = *base;
@@ -68,11 +69,12 @@ impl <'a> AlignStore<'a> {
             let bs = *c & 3;
             if rb < 4 {
                let mm = if rb != bs { 1 } else { 0 };
-               if !is_del(*base) {
+               let q = *c >> 2;
+               if q >= qt && !is_del(*base) {
                   ct[mm] += 1
                }
                if ctxt.context3().is_some() && self.cfg.rs(x).is_none() {
-                  let q = (*c >> 2) as usize;
+                  let q = q as usize;
                   let ct = ctxt.context3().unwrap() as usize;
                   if !is_del(*base) {
                      pw.qual_hist[q][mm] += 1;

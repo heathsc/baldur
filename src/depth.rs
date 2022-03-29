@@ -64,6 +64,20 @@ pub(crate) struct Depth {
    pub(crate) ins_hash: HashMap<usize, InsAlleles>,
 }
 
+pub fn base_to_ix_strand(ix: usize) -> (usize, usize) {
+   const HM1: usize = HIDX - 1;
+   const HLIM: usize = HIDX + BASES_LIM;
+   const HSKIP: usize = HIDX + BASES_SKIP;
+   match ix {
+      0..=BASES_LIM => (ix, 0), // Forward A,C,G,T,Del,I
+      BASES_SKIP => (4, 0), // Forward skip counts as Del
+      BASES_LOWQ..=HM1 => (6, 0), // Forward low quality bases
+      HIDX..=HLIM => (ix - HIDX, 1), // Reverse A,C,G,T,Del
+      HSKIP => (4, 1), // Reverse skip
+      _ => (6, 1), // Reverse low quality bases
+   }
+}
+
 impl Depth {
    pub(crate) fn new(size: usize, detail: bool) -> Self {
       let hash: HashMap<u8, usize> = BASES.bytes().enumerate().map(|(i, c)| (c, i)).collect();
@@ -81,19 +95,9 @@ impl Depth {
          }
       }
       let itr = obs.iter().zip(qual.iter().map(|x| *x as usize));
-      const HM1: usize = HIDX - 1;
-      const HLIM: usize = HIDX + BASES_LIM;
-      const HSKIP: usize = HIDX + BASES_SKIP;
       for ((o, q), ct) in itr.zip(self.counts.iter_mut()) {
          if let Some(&ix) = self.hash.get(o) {
-            let (k, s) = match ix {
-               0..=BASES_LIM => (ix, 0), // Forward A,C,G,T,Del,I
-               BASES_SKIP => (4, 0), // Forward skip counts as Del
-               BASES_LOWQ..=HM1 => (6, 0), // Forward low quality bases
-               HIDX..=HLIM => (ix - HIDX, 1), // Reverse A,C,G,T,Del
-               HSKIP => (4, 1), // Reverse skip
-               _ => (6, 1), // Reverse low quality bases
-            };
+            let (k, s) = base_to_ix_strand(ix);
             ct.cts[k][s] += 1;
             ct.qcts[k][q] += 1;
          }

@@ -18,6 +18,7 @@ mod alleles;
 mod align_store;
 mod read;
 mod stat_funcs;
+mod freq;
 
 pub fn io_err(s: String) -> io::Error {
     io::Error::new(io::ErrorKind::Other, s)

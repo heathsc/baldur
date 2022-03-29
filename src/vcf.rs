@@ -9,12 +9,13 @@ use compress_io::{compress::CompressIo, compress_type::CompressType};
 use r_htslib::*;
 
 use crate::{
-   model::{freq_mle, AlleleRes, N_QUAL, ModelRes},
+   model::{freq_mle, AlleleRes, N_QUAL, MAX_PHRED, ModelRes},
    mann_whitney::mann_whitney,
    cli::{Config, ThresholdType},
    fisher::FisherTest,
    reference::RefPos,
-   alleles::AllDesc,
+   alleles::{AllDesc, LargeDeletion},
+   stat_funcs::pnormc,
 };
 
 const FLT_FS: u32 = 1;
@@ -38,6 +39,7 @@ pub(crate) struct VcfCalc<'a, 'b, 'c> {
    pub(crate) seq_len: usize,
    pub(crate) ref_seq: &'b [RefPos],
    pub(crate) homopolymer_limit: u8,
+   pub(crate) all_desc: Vec<AllDesc>, // AllDesc for 'standard' 5 alleles (A, C, G, T, Del)
    pub(crate) cfg: &'c Config,
 }
 
@@ -48,6 +50,8 @@ pub(crate) struct Allele {
 
 pub(crate) struct VcfRes {
    pub(crate) alleles: Vec<Allele>,
+   pub(crate) adesc: Option<Vec<AllDesc>>,
+   pub(crate) x: usize,
    pub(crate) phred: u8,
 }
 
@@ -68,14 +72,14 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
       let indel_flags = [false, false, false, false, true];
       let ref_ix = (self.ref_seq[x].base()) as usize;
 
-      self.est_allele_freqs(ref_ix, cts, qcts, &indel_flags)
+      self.est_allele_freqs(x, ref_ix, cts, qcts, &indel_flags)
    }
 
-   pub fn get_mallele_freqs(&self, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]], indel_flags: &[bool]) -> VcfRes {
-      self.est_allele_freqs(0, cts, qcts, indel_flags)
+   pub fn get_mallele_freqs(&self, x: usize, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]], indel_flags: &[bool]) -> VcfRes {
+      self.est_allele_freqs(x,0, cts, qcts, indel_flags)
    }
 
-   pub fn est_allele_freqs(&self, ref_ix: usize, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]], indel_flags: &[bool]) -> VcfRes {
+   pub fn est_allele_freqs(&self, x: usize, ref_ix: usize, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]], indel_flags: &[bool]) -> VcfRes {
 
       let n_alls = cts.len();
       assert_eq!(n_alls, qcts.len());
@@ -146,11 +150,37 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
       let alleles: Vec<_> = alleles.iter().filter(|&&k| all[k].flag)
          .map(|&k| Allele{ix: k, res: all[k]}).collect();
 
-      VcfRes{alleles, phred}
+      VcfRes{alleles, adesc: None, x, phred}
+   }
+
+   // Generate VCF output line for large deletions
+   pub fn del_output(&self, del: &LargeDeletion) -> String {
+      let mut f = String::new();
+
+      let fq = del.freq;
+      let sd = (fq * (1.0 - fq) / (del.n as f64)).sqrt();
+      let z = fq / sd;
+      let phred = if z > 10.0 { MAX_PHRED }
+      else {
+         (pnormc(z).log10()*-10.0).round().min(MAX_PHRED as f64) as u8
+      };
+
+      let flt = if phred >= 30 { 0 } else { FLT_Q30 };
+
+      // ALT, QUAL, FILTER
+      let _ = write!(f, "<DEL>\t{}\t{}", phred, Filter(flt));
+      // INFO
+      let _ = write!(f, "\tSVTYPE=DEL;END={};SVLEN={};CIPOS={},{};CILEN={},{}", del.end() + 1,
+                     del.length, del.pos_ci(0), del.pos_ci(1), del.len_ci(0), del.len_ci(1));
+      // FORMAT
+      let _ = write!(f, "\tGT:HPL\t0/1:{:.5}", fq);
+      f
    }
 
    // Generate Optional String with VCF output line
-   pub fn output(&self, x: usize, vr: &mut VcfRes, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]], all_desc: &[AllDesc]) -> Option<String> {
+   pub fn output(&self, vr: &mut VcfRes, cts: &[[usize; 2]], qcts: &[[usize; N_QUAL]]) -> Option<String> {
+
+      let x = vr.x;
 
       let raw_depth = cts.iter().fold(0, |t, x| t + x[0] + x[1]);
 
@@ -171,6 +201,8 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
 
       let snv_soft_lim =  self.cfg.snv_threshold(ThresholdType::Soft);
       let indel_soft_lim =  self.cfg.indel_threshold(ThresholdType::Soft);
+
+      let desc = vr.adesc.as_ref().unwrap_or(&self.all_desc);
 
       // Extra per allele results
       let mut all_res: Vec<_> = vr.alleles.iter().map(|ar| {
@@ -201,7 +233,7 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
          } else { 1.0 };
 
          // Set allele freq. flags
-         let (lim, pos_adjust) = if all_desc[ar.ix].len() != all_desc[ref_ix].len() {
+         let (lim, pos_adjust) = if desc[ar.ix].len() != desc[ref_ix].len() {
             // This is an indel (size difference from reference)
             let hp_size = (self.ref_seq[x].hpoly() & 0xf).max(self.ref_seq[x + 1].hpoly() & 0xf) + 1;
             if hp_size >= self.homopolymer_limit {
@@ -212,7 +244,7 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
             // In a complex variant, a SNV could start a few bases after the location of the variant
             let x = if ar.ix == ref_ix { 0 } else {
                // Find position of first base that differs between this allele and the reference
-               all_desc[ref_ix].iter().zip(all_desc[ar.ix].iter()).enumerate()
+               desc[ref_ix].iter().zip(desc[ar.ix].iter()).enumerate()
                   .find(|(_, (c1, c2))| *c1 != *c2).map(|(ix, _)| ix as u32).unwrap()
             };
             (snv_soft_lim, x)
@@ -275,9 +307,9 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
 
       if vr.alleles.len() > 1 {
          let mut f = String::new();
-         write!(f, "{}\t{}", all_desc[ref_ix], all_desc[vr.alleles[1].ix]).ok()?;
+         write!(f, "{}\t{}", desc[ref_ix], desc[vr.alleles[1].ix]).ok()?;
 
-         for s in vr.alleles[2..].iter().map(|a| &all_desc[a.ix]) {
+         for s in vr.alleles[2..].iter().map(|a| &desc[a.ix]) {
             write!(f, ",{}", s).ok()?;
          }
          write!(f, "\t{}\t{}", vr.phred, Filter(flt)).ok()?;
@@ -286,7 +318,7 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
          write!(f, "\tDP={}", raw_depth).ok()?;
 
          for ar in vr.alleles[1..].iter() {
-            if all_desc[ar.ix].len() != all_desc[ref_ix].len() {
+            if desc[ar.ix].len() != desc[ref_ix].len() {
                write!(f, ";INDEL").ok()?;
                break
             }
@@ -407,6 +439,12 @@ pub fn write_vcf_header(sam_hdr: &SamHeader, cfg: &Config) -> io::Result<BufWrit
    writeln!(vcf_wrt, "##FORMAT=<ID=QBS,Number=R,Type=Float,Description=\"Mann-Whitney-Wilcoxon test of minor allele base quality scores\">")?;
    writeln!(vcf_wrt, "##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Raw read depth\">")?;
    writeln!(vcf_wrt, "##INFO=<ID=INDEL,Number=0,Type=Flag,Description=\"Indicates that the variant is an INDEL\">")?;
+   writeln!(vcf_wrt, "##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"Type of structural variant\">")?;
+   writeln!(vcf_wrt, "##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position of structural variant\">")?;
+   writeln!(vcf_wrt, "##INFO=<ID=SVLEN,Number=1,Type=Integer,Description=\"Difference in length between REF and ALT alleles\">")?;
+   writeln!(vcf_wrt, "##INFO=<ID=CIPOS,Number=2,Type=Integer,Description=\"95% confidence interval around POS for structural variants\">")?;
+   writeln!(vcf_wrt, "##INFO=<ID=CILEN,Number=2,Type=Integer,Description=\"95% confidence interval around SVLEN for structural variants\">")?;
+   writeln!(vcf_wrt, "##ALT=<ID=DEL, Description=\"Deletion\">")?;
    writeln!(vcf_wrt, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{}", sample)?;
    Ok(vcf_wrt)
 }

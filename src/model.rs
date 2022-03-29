@@ -2,7 +2,7 @@ use log::Level::Trace;
 use crate::stat_funcs::chisq1;
 
 pub const N_QUAL: usize = 64;
-const MAX_PHRED: u8 = 40;
+pub const MAX_PHRED: u8 = 40;
 const MAX_ITER: usize = 5000;
 const ZERO_LIM: f64 = 1.0e-8;
 

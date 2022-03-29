@@ -17,6 +17,7 @@ use crate::{
     context::*,
     alleles::*,
     read::read_file,
+    freq::{estimate_single_base_freq, process_large_deletions},
 };
 
 type Qhist = [[usize; 4]; 64];
@@ -86,224 +87,181 @@ pub fn process_data(mut sam_file: HtsFile, mut sam_hdr: SamHeader, cfg: Config) 
         None
     };
 
-    let fisher_test = FisherTest::new();
-    let mut vr_cache: Option<(usize, VcfRes, &mut DepthCounts, Option<Vec<AllDesc>>)> = None;
-    let all_desc: Vec<AllDesc> = (0..5).map(|i| if i < 4 { AllDesc(vec!(i)) } else { AllDesc(vec!()) }).collect();
+    let ref_base = |x: usize| BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;
 
-    let vcf_calc = VcfCalc {
-        ftest: &fisher_test,
-        ref_seq,
-        homopolymer_limit: cfg.homopolymer_limit(),
-        seq_len: ref_seq.len(),
-        cfg: &cfg,
-    };
-
-    for (i, dep) in pw.depth.counts.iter_mut().enumerate() {
+    // Print out depth records
+    for (i, dep) in pw.depth.counts.iter().enumerate() {
         let x = i + reg.start();
-        let ref_base = BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;
 
         // Write out depth record
-        writeln!(wrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), x + 1, ref_base, dep)?;
+        writeln!(wrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), x + 1, ref_base(x), dep)?;
+    }
 
-        // Handle VCF output
-        if let Some(vwrt) = vcf_wrt.as_mut() {
-            trace!("At: {}", x + 1);
-            let (mut vr, all_desc1) = if let Some(ins_all) = pw.depth.ins_hash.get(&x) {
+    let fisher_test = FisherTest::new();
+    let mut vr_cache: Option<(&mut VcfRes, &DepthCounts)> = None;
 
-                // Check if there is at least 1 insertion with the required number of observatations
-                if ins_all.hash.iter().map(|(_, &i)| &ins_all.alleles[i]).any(|ct| ct.cts[0] > 1 && ct.cts[1] > 1) {
+    // If variant calling required, perform frequency estimation
+    let mut vcf_data= if vcf_wrt.is_some() {
+        let all_desc: Vec<AllDesc> = (0..5).map(|i| AllDesc::make(vec!(i), None, Trunc::No)).collect();
+        let vc = VcfCalc {
+               ftest: &fisher_test,
+               ref_seq,
+               homopolymer_limit: cfg.homopolymer_limit(),
+               seq_len: ref_seq.len(),
+               all_desc, // Allele descriptions for the standard 5 bases (A C G T Del)
+               cfg: &cfg,
+        };
 
-                    // If so, then collect regular and insertion alleles
-                    let mut adesc: Vec<AllDesc> = Vec::with_capacity(8);
-                    let ref_ix = ref_seq[x].base();
-                    // Add regular bases + del
-                    adesc.push(AllDesc(vec!(ref_ix)));
-                    for b in (0..5).filter(|&x| x != ref_ix) {
-                        adesc.push(AllDesc(vec!(b)));
-                    }
-                    // Add possible insertion alleles
-                    for (all, ct) in ins_all.hash.iter().map(|(all, &i)| (all, &ins_all.alleles[i])) {
-                        if ct.cts[0] > 1 && ct.cts[1] > 1 {
-                            adesc.push(AllDesc(all.to_vec()))
+        let mut res = Vec::with_capacity(pw.depth.counts.len());
+
+        // Calculate Individual base frequency estimates
+        estimate_single_base_freq(&mut pw, &mut res, &vc, None, None);
+
+        let large_dels = process_large_deletions(&mut pw, &mut res, &vc);
+
+        Some((vc, res, large_dels))
+    } else { None };
+
+    // Output VCF data
+    debug!("Starting VCF output");
+    if let Some(vwrt) = vcf_wrt.as_mut() {
+
+
+        let (vc, mut res, large_dels) = vcf_data.take().unwrap();
+        // Find first locus that does not have a retained deletion
+        if let Some((ix, _)) = res.iter().enumerate().find(|(_, vr)| vr.alleles.iter().all(|a| a.ix != 4)) {
+            trace!("Starting output at {}", res[ix].x + 1);
+            let counts = &mut pw.depth.counts;
+            let mut del_iter = large_dels.iter().peekable();
+            for vr in res[ix..].iter_mut() {
+                let x = vr.x;
+                if vr.alleles.iter().all(|ar| ar.ix != 4) {
+                    // None of the retained alleles is a deletion, so we can output the previous locus
+                    if let Some((vr1, dep1)) = vr_cache.take() {
+                        if let Some(del) = del_iter.next_if(|d| d.start <= vr1.x) {
+                            let s = vc.del_output(del);
+                            writeln!(vwrt, "{}\t{}\t.\t{}\t{}", sam_hdr.tid2name(reg.tid()), del.start + 1, ref_base(del.start), s)?;
+                        }
+                        if let Some(s) = vc.output(vr1, &dep1.cts, &dep1.qcts) {
+                            let rs = cfg.rs(vr1.x + 1).unwrap_or(".");
+                            writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), vr1.x + 1, rs, s)?;
                         }
                     }
-                    let (new_cts, new_qcts, indel_flag) =
-                       get_allele_counts(&adesc, x, x, ref_seq.len(), pw.depth.dalign.as_ref().unwrap(), &pw.depth.ins_hash);
-                    for a in adesc.iter_mut() {
-                        if a.len() == 1 && a[0] == 4 { a.0.clear() }
+                    // Store current locus in cache
+                    vr_cache = Some((vr, &counts[x]))
+                } else if let Some((mut vr1, dep1)) = vr_cache.take() {
+                    trace!("Merging {} to {}", vr1.x + 1, x + 1);
+                    let desc = vr1.adesc.as_ref().unwrap_or(&vc.all_desc);
+                    let mut adesc: Vec<AllDesc> = Vec::new();
+
+                    // Make list of possible new alleles
+                    let mut hset: HashSet<Vec<u8>> = HashSet::new();
+                    let ad = vr.adesc.as_ref().unwrap_or(&vc.all_desc);
+                    let mut orig_all_list = Vec::with_capacity(ad.len() * desc.len());
+                    let mut trim_possible = true;
+                    for all1 in vr.alleles.iter() {
+                        let ds1 = &ad[all1.ix];
+                        for all in vr1.alleles.iter() {
+                            let ds = &desc[all.ix];
+                            let mut new_ds = ds.to_vec();
+                            new_ds.extend_from_slice(ds1);
+                            if !hset.contains(&new_ds) {
+                                hset.insert(new_ds.to_vec());
+                                let new_ds = AllDesc::make(new_ds, None, Trunc::No);
+                                adesc.push(new_ds);
+                                orig_all_list.push((all.ix, all1.ix));
+                            } else {
+                                trim_possible = false;
+                            }
+                        }
                     }
+
+                    let (new_cts, new_qcts, indel_flag) = get_allele_counts(&adesc, vr1.x, x, ref_seq.len(), pw.depth.dalign.as_ref().unwrap(), &pw.depth.ins_hash);
                     if log_enabled!(Trace) {
-                        trace!("Insertion counts: {}", x + 1);
+                        trace!("Deletion counts : {}", x + 1);
                         for (a, c) in adesc.iter().zip(new_cts.iter()) {
                             trace!("{}\t{}\t{}", a, c[0], c[1]);
                         }
                     }
-                    let vr = vcf_calc.get_mallele_freqs(&new_cts, &new_qcts, &indel_flag);
+
+                    // Get allele frequency estimates
+                    let vr2 = vc.get_mallele_freqs(x, &new_cts, &new_qcts, &indel_flag);
+
+                    // Check whether we can split up the new locus
+                    let first_all = &adesc[vr2.alleles[0].ix];
+                    let mut indel = false;
+                    let mut n_orig_alleles = 0;
+                    for ar in vr2.alleles.iter() {
+                        if ar.ix < vr1.alleles.len() { n_orig_alleles += 1 }
+                        if adesc[ar.ix].len() != first_all.len() { indel = true }
+                    }
+
                     if log_enabled!(Trace) {
-                        trace!("Insertion freq. estimates: {}", x + 1);
-                        for ar in vr.alleles.iter() {
+                        trace!("Deletion freq. estimates : {}.  No alleles: {}, No orig alleles: {}, indel: {}", x + 1, vr2.alleles.len(), n_orig_alleles, indel);
+                        for ar in vr2.alleles.iter() {
                             trace!("{}\t{}\t{}", &adesc[ar.ix], ar.res.freq, ar.res.lr_test);
                         }
                     }
-                    dep.cts = new_cts;
-                    dep.qcts = new_qcts;
-                    (vr, Some(adesc))
+
+                    let no_change = vr2.alleles.len() == n_orig_alleles && vr1.alleles.len() == n_orig_alleles;
+
+                    // See if deletion allele from allele 2 still present in retained joint allele
+                    if vr2.alleles.len() == 1 || no_change || (trim_possible && vr2.alleles.iter().all(|ar| orig_all_list[ar.ix].1 != 4)) {
+                        trace!("Deletion alleles not retained.  Print out previous cluster and start a new one");
+                        trace!("Removing eliminated alleles from current cluster");
+                        let mut allele_flag = vec!(false; ad.len());
+                        for ar in vr2.alleles.iter() {
+                            let ix = orig_all_list[ar.ix].1;
+                            allele_flag[ix] = true;
+                        }
+                        let mut alleles: Vec<_> = vr.alleles.drain(..).filter(|ar| allele_flag[ar.ix]).collect();
+                        let z = alleles.iter().fold(0.0, |s, ar| s + ar.res.freq);
+                        if z < 1.0 {
+                            for ar in alleles.iter_mut() {
+                                ar.res.freq /= z;
+                            }
+                        }
+                        vr.alleles = alleles;
+
+                        if vr2.alleles.len() == 1 {
+                            vr1.alleles.truncate(1);
+                            vr1.alleles[0].res.freq = 1.0;
+                        }
+
+                        // Write out previous locus
+                        if let Some(del) = del_iter.next_if(|d| d.start <= vr1.x) {
+                            let s = vc.del_output(del);
+                            writeln!(vwrt, "{}\t{}\t.\t{}\t{}", sam_hdr.tid2name(reg.tid()), del.start + 1, ref_base(del.start), s)?;
+                        }
+                        if let Some(s) = vc.output(&mut vr1, &dep1.cts, &dep1.qcts) {
+                            let rs = cfg.rs(vr1.x + 1).unwrap_or(".");
+                            writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), vr1.x + 1, rs, s)?;
+                        }
+                        // Add current locus to cache
+                        vr_cache = Some((vr, &counts[x]))
+                    } else {
+                        // Can not simplify, so add merged locus to cache
+                        counts[vr2.x].cts = new_cts;
+                        counts[vr2.x].qcts = new_qcts;
+                        vr.alleles = vr2.alleles;
+                        vr.x = vr2.x;
+                        vr.phred = vr2.phred;
+                        vr.adesc = Some(adesc);
+                        vr_cache = Some((vr, &counts[vr2.x]))
+                    }
                 } else {
-
-                    // No insertions, so just handle the regular alleles
-                    if log_enabled!(Trace) {
-                        trace!("Standard counts: {}", x + 1);
-                        for (a, c) in all_desc[..5].iter().zip(dep.cts.iter()) {
-                            trace!("{}\t{}\t{}", a, c[0], c[1]);
-                        }
-                    }
-                    let (vr1, ad) = (vcf_calc.get_allele_freqs(x, &dep.cts[..5], &dep.qcts[..5]), None);
-                    if log_enabled!(Trace) {
-                        trace!("Standard freq. estimates: {}", x + 1);
-                        for ar in vr1.alleles.iter() {
-                            trace!("{}\t{}\t{}", &all_desc[ar.ix], ar.res.freq, ar.res.lr_test);
-                        }
-                    }
-                    (vr1, ad)
+                    panic!("Should not get here");
                 }
-            } else {
-                if log_enabled!(Trace) {
-                    trace!("Standard counts: {}", x + 1);
-                    for (a, c) in all_desc[..5].iter().zip(dep.cts.iter()) {
-                        trace!("{}\t{}\t{}", a, c[0], c[1]);
-                    }
-                }
-                let (vr1, ad) = (vcf_calc.get_allele_freqs(x, &dep.cts[..5], &dep.qcts[..5]), None);
-                if log_enabled!(Trace) {
-                    trace!("Standard freq. estimates: {}", x + 1);
-                    for ar in vr1.alleles.iter() {
-                        trace!("{}\t{}\t{}", &all_desc[ar.ix], ar.res.freq, ar.res.lr_test);
-                    }
-                }
-                (vr1, ad)
-            };
-
-            // For the current locus, the deletion allele will always have the ix field set to 4, so
-            // we can check if any of the retained alleles is a deletion by checking if any have ix == 4
-            if !vr.alleles.iter().any(|ar| ar.ix == 4) {
-                // None of the retained alleles is a deletion, so we can output the previous locus
-                if let Some((x1, mut vr1, dep1, odesc)) = vr_cache.take() {
-                    let desc = odesc.as_ref().unwrap_or(&all_desc);
-                    if let Some(s) = vcf_calc.output(x1, &mut vr1, &dep1.cts, &dep1.qcts, desc) {
-                        let rs = cfg.rs(x1 + 1).unwrap_or(".");
-                        writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), x1 + 1, rs, s)?;
-                    }
-                }
-                // Store current locus in cache
-                vr_cache = Some((x, vr, dep, all_desc1))
-            } else if let Some((x1, mut vr1, mut dep1, odesc)) = vr_cache.take() {
-                // Current locus contains deletion allele, so we need to combine with the previous locus
-                trace!("Merging {} to {}", x1 + 1, x + 1);
-                let desc = odesc.as_ref().unwrap_or(&all_desc);
-                let mut adesc: Vec<AllDesc> = Vec::new();
-
-                // Make list of possible new alleles
-                let mut hset: HashSet<Vec<u8>> = HashSet::new();
-                let ad = all_desc1.as_ref().unwrap_or(&all_desc);
-                let mut orig_all_list = Vec::with_capacity(ad.len() * desc.len());
-                let mut trim_possible = true;
-                for all1 in vr.alleles.iter() {
-                    let ds1 = &ad[all1.ix];
-                    for all in vr1.alleles.iter() {
-                        let ds = &desc[all.ix];
-                        let mut new_ds = ds.to_vec();
-                        new_ds.extend_from_slice(ds1);
-                        if !hset.contains(&new_ds) {
-                            hset.insert(new_ds.to_vec());
-                            let new_ds = AllDesc(new_ds);
-                            adesc.push(new_ds);
-                            orig_all_list.push((all.ix, all1.ix));
-                        } else {
-                            trim_possible = false;
-                        }
-                    }
-                }
-                let (new_cts, new_qcts, indel_flag) = get_allele_counts(&adesc, x1, x, ref_seq.len(), pw.depth.dalign.as_ref().unwrap(), &pw.depth.ins_hash);
-                if log_enabled!(Trace) {
-                    trace!("Deletion counts : {}", x + 1);
-                    for (a, c) in adesc.iter().zip(new_cts.iter()) {
-                        trace!("{}\t{}\t{}", a, c[0], c[1]);
-                    }
-                }
-
-                // Get allele frequency estimates
-                let vr2 = vcf_calc.get_mallele_freqs(&new_cts, &new_qcts, &indel_flag);
-
-                // Check whether we can split up the new locus
-                let first_all = &adesc[vr2.alleles[0].ix];
-                let mut indel = false;
-                let mut n_orig_alleles = 0;
-                for ar in vr2.alleles.iter() {
-                    if ar.ix < vr1.alleles.len() { n_orig_alleles += 1 }
-                    if adesc[ar.ix].len() != first_all.len() { indel = true }
-                }
-
-                if log_enabled!(Trace) {
-                    trace!("Deletion freq. estimates : {}.  No alleles: {}, No orig alleles: {}, indel: {}", x + 1, vr2.alleles.len(), n_orig_alleles, indel);
-                    for ar in vr2.alleles.iter() {
-                        trace!("{}\t{}\t{}", &adesc[ar.ix], ar.res.freq, ar.res.lr_test);
-                    }
-                }
-
-                let no_change = vr2.alleles.len() == n_orig_alleles && vr1.alleles.len() == n_orig_alleles;
-
-                // See if deletion allele from allele 2 still present in retained joint allele
-                if vr2.alleles.len() == 1 || no_change || (trim_possible && vr2.alleles.iter().all(|ar| orig_all_list[ar.ix].1 != 4)) {
-                    trace!("Deletion alleles not retained.  Print out previous cluster and start a new one");
-                    trace!("Removing eliminated alleles from current cluster");
-                    let mut allele_flag = vec!(false; ad.len());
-                    for ar in vr2.alleles.iter() {
-                        let ix = orig_all_list[ar.ix].1;
-                        allele_flag[ix] = true;
-                    }
-                    let mut alleles: Vec<_> = vr.alleles.drain(..).filter(|ar| allele_flag[ar.ix]).collect();
-                    let z = alleles.iter().fold(0.0, |s, ar| s + ar.res.freq );
-                    if z < 1.0 {
-                        for ar in alleles.iter_mut() {
-                            ar.res.freq /= z;
-                        }
-                    }
-                    vr.alleles = alleles;
-
-                    if vr2.alleles.len() == 1 {
-                        vr1.alleles.truncate(1);
-                        vr1.alleles[0].res.freq = 1.0;
-                    }
-
-                    // Write out previous locus
-                    if let Some(s) = vcf_calc.output(x1, &mut vr1, &dep1.cts, &dep1.qcts, desc) {
-                        let rs = cfg.rs(x1 + 1).unwrap_or(".");
-                        writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), x1 + 1, rs, s)?;
-                    }
-                    // Add current locus to cache
-                    vr_cache = Some((x, vr, dep, all_desc1))
-                } else {
-                    // Can not simplify, so add merged locus to cache
-                    dep1.cts = new_cts;
-                    dep1.qcts = new_qcts;
-                    vr_cache = Some((x1, vr2, dep1, Some(adesc)))
-                }
-            } else {
-                // This occurs if we have a deletion in the current locus but there is no subsequent locus
-                // which can only happen if there is a deletion at the start of the region
-                panic!("Deletions across origin not yet handled")
             }
-        }
-    }
-    // Print out remaining (cached) locus if required
-
-    if let Some(vwrt) = vcf_wrt.as_mut() {
-
-        if let Some((x1, mut vr1, dep1, odesc)) = vr_cache.take() {
-            let desc = odesc.as_ref().unwrap_or(&all_desc);
-            if let Some(s) = vcf_calc.output(x1, &mut vr1, &dep1.cts, &dep1.qcts, desc) {
-                let rs = cfg.rs(x1 + 1).unwrap_or(".");
-                writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), x1 + 1, rs, s)?;
+            if let Some((mut vr1, dep1)) = vr_cache.take() {
+                if let Some(del) = del_iter.next_if(|d| d.start <= vr1.x) {
+                    let s = vc.del_output(del);
+                    writeln!(vwrt, "{}\t{}\t.\t{}\t{}", sam_hdr.tid2name(reg.tid()), del.start + 1, ref_base(del.start), s)?;
+                }
+                if let Some(s) = vc.output(&mut vr1, &dep1.cts, &dep1.qcts) {
+                    let rs = cfg.rs(vr1.x + 1).unwrap_or(".");
+                    writeln!(vwrt, "{}\t{}\t{}\t{}", sam_hdr.tid2name(reg.tid()), vr1.x + 1, rs, s)?;
+                }
             }
         }
     }
