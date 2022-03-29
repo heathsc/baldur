@@ -150,7 +150,7 @@ pub fn process_data(mut sam_file: HtsFile, mut sam_hdr: SamHeader, cfg: Config) 
                     // Store current locus in cache
                     vr_cache = Some((vr, &counts[x]))
                 } else if let Some((mut vr1, dep1)) = vr_cache.take() {
-                    trace!("Merging {} to {}", vr1.x + 1, x + 1);
+                    trace!("Merging {} to {}", x + 1, vr1.x + 1);
                     let desc = vr1.adesc.as_ref().unwrap_or(&vc.all_desc);
                     let mut adesc: Vec<AllDesc> = Vec::new();
 
@@ -185,7 +185,7 @@ pub fn process_data(mut sam_file: HtsFile, mut sam_hdr: SamHeader, cfg: Config) 
                     }
 
                     // Get allele frequency estimates
-                    let vr2 = vc.get_mallele_freqs(x, &new_cts, &new_qcts, &indel_flag);
+                    let vr2 = vc.get_mallele_freqs(vr1.x, &new_cts, &new_qcts, &indel_flag);
 
                     // Check whether we can split up the new locus
                     let first_all = &adesc[vr2.alleles[0].ix];

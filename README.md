@@ -125,6 +125,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.1.2 Fix bug in merging of deletion alleles (introduced in 1.1.0)
 - 1.1.1 Change default quality thresholds for bases and indels to 30 and 20 respectively, and change default indel threshold to 0.025, 0.1 (hard, soft).
 - 1.1.0 Generate large deletions calls separately from smaller deletions.  For large deletions we don't explicitly consider the non-deleted allele
 and just count the number of deletions against the other alleles.  Large deletions with similar endpoints are merged together and the collection of observed
