@@ -53,7 +53,8 @@ during the build process:
     RUSTFLAGS="-L /opt/share/htslib/1.14/lib/"  cargo build --release
 
 After successful the executable will be found in target/release/.  It
-should be copied somewhere where it can be found by the shell.
+should be copied somewhere where it can be found by the shell.  The file `share/blacklist.txt` should also be copied
+to a generally accessible location if you intend to use the [blacklist](#blacklist) option
 
 Once installed, basic help can be found by invoking baldur with
 the -h flag.
@@ -70,12 +71,14 @@ baldur -T chrM.fa.gz in.bam
 ```
 And a more typical command line showing multiple options would be:
 ```
-baldur --rs-list bed_chr_MT.bed.gz -q20 -Q10 -M30 -P3 -T chrM.fa -o output input.bam
+baldur --rs-list bed_chr_MT.bed.gz --blacklist share/backlist.txt -q20 -Q10 -M30 -T chrM.fa -o output input.bam
 ```
 
 The above line would run baldur using `chrM.fa` as reference, reading from `input.bam` and 
-generating an output file `output.vcf.gz`.  The other options set the MAPQ theshold to 20, the base quality threshold to 10, the maximum base quality to 30 (any quality above this will be set to 30), and the
-minimum size of a homopolymer to generate a warning filter to 3.
+generating an output file `output.vcf.gz`.  The other options set the MAPQ theshold to 20, 
+the base quality threshold to 10, the maximum base quality to 30 (any quality above this will
+be set to 30), and specify that SNP rs ids can be found from the file `bed_chr_MT.bed.gz` and that a blacklist
+of positions to be filtered should be read from the file `share/blacklist.txt`.
 
 The circular nature of the mitochondria can make read mapping challenging, and several strategies can be used
 to get around this.  One of the more common is to use a *rotated reference* where the origin of the reference
@@ -89,28 +92,28 @@ Baldur has two behaviours that help the handling of alignments from such shifted
 
 Baldur has many command line options for controlling the operation of the calling process.
 
-| Short | Long                 | Description                                                 | Default        |
-|-------|----------------------|-------------------------------------------------------------|----------------|
-| q     | mapq-threshold       | MAPQ threshold                                              | 0              |
-| Q     | qual-threshold       | Minimum base quality                                        | 0              |
-| M     | max-qual             | Quality values for bases are capped at this value           | 30             |
-| I     | max-indel-qual       | Quality values for indels are capped at this value          | 20             |
-| P     | homopolymer-limit    | Minimum size of homopolymer runs flagged as problematic     | 4              |
-|       | snv-thresholds       | Hard and soft limits for SNV reporting                      | 0.0005, 0.0025 |
-|       | indel-thresholds     | Hard and soft limits for indel reporting                    | 0.025, 0.1     |
-|       | small-deletion-limit | Maximum size for a small (explicit) deletion                | 64             |
+| Short                    | Long                 | Description                                                 | Default        |
+|--------------------------|----------------------|-------------------------------------------------------------|----------------|
+| q                        | mapq-threshold       | MAPQ threshold                                              | 0              |
+| Q                        | qual-threshold       | Minimum base quality                                        | 0              |
+| M                        | max-qual             | Quality values for bases are capped at this value           | 30             |
+| I                        | max-indel-qual       | Quality values for indels are capped at this value          | 20             |
+| P                        | homopolymer-limit    | Minimum size of homopolymer runs flagged as problematic     | 4              |
+|                          | snv-thresholds       | Hard and soft limits for SNV reporting                      | 0.0005, 0.0025 |
+|                          | indel-thresholds     | Hard and soft limits for indel reporting                    | 0.025, 0.1     |
+|                          | small-deletion-limit | Maximum size for a small (explicit) deletion                | 64             |
 |||||
-| a     | adjust               | Adjustment to genomic position of alignments                | 0              |
-| r     | region               | Genomic region to consider                                  |                |
+| a                        | adjust               | Adjustment to genomic position of alignments                | 0              |
+| r                        | region               | Genomic region to consider                                  |                |
 |||||
-| o     | output-prefix        | Prefix for output files                                     | baldur         |
-| n     | sample               | Sample name (in VCF file)                                   | SAMPLE         |
-| T     | reference            | Reference FASTA file (**REQUIRED**)                         |                |
-| l     | loglevel             | Set log level (none, error, warn, info, debug, trace)       | info           |
-|       | blacklist            | BED file with list of blacklisted sites                     |                |
-|       | rs-list              | BED file with dbSNP rs identifiers                          |                |
-|       | view          | Generate pileup view file|                |
-|       | no-call              | Do not perform variant calling                              |                |
+| o                        | output-prefix        | Prefix for output files                                     | baldur         |
+| n                        | sample               | Sample name (in VCF file)                                   | SAMPLE         |
+| T                        | reference            | Reference FASTA file (**REQUIRED**)                         |                |
+| l                        | loglevel             | Set log level (none, error, warn, info, debug, trace)       | info           |
+| <a name="blacklist"></a> | blacklist            | BED file with list of blacklisted sites                     |                |
+|                          | rs-list              | BED file with dbSNP rs identifiers                          |                |
+|                          | view          | Generate pileup view file|                |
+|                          | no-call              | Do not perform variant calling                              |                |
 
 ## <a name="overview"></a>Overview of workflow
 
