@@ -44,10 +44,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
       });
    }
 
-   if blst
-      .iter()
-      .all(|rec| rec.tid() == Some(reg.tid()) && (pe || (rec.flag() & BAM_FREVERSE) == fg))
-   {
+   if blst.iter().all(|rec| rec.tid() == Some(reg.tid()) && (pe || (rec.flag() & BAM_FREVERSE) == fg)) {
       let mut prev = None;
 
       let mut align_store = AlignStore::new(reg, cfg);
@@ -213,7 +210,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
       }
       if align_store.changed() {
          let depth = &mut proc_work.depth;
-         depth.add_obs_vec(align_store.seq(), align_store.qual(), ins_hash);
+         depth.add_obs_vec(align_store.seq(), align_store.qual(), ins_hash, blst[0].qname());
          if let Some(w) = wrt {
             w.write_all(align_store.seq())?;
             if let Some(b) = blst.get(0) {
@@ -255,7 +252,7 @@ pub(crate) fn read_file(sam_file: &mut HtsFile, sam_hdr: &mut SamHeader, cfg: &C
                if idx > 0 {
                   if !b.qnames_eq(&blst[0]) {
                      if idx <= MAX_SPLIT {
-                        handle_read(&mut blst[0..idx], &cfg, pw, wrt.as_mut())?
+                        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
                      }
                      b.swap(&mut blst[0]);
                      idx = 1;
@@ -284,7 +281,7 @@ pub(crate) fn read_file(sam_file: &mut HtsFile, sam_hdr: &mut SamHeader, cfg: &C
    }
    // Process remaining reads (if any)
    if idx > 0 && idx <= MAX_SPLIT {
-      handle_read(&mut blst[0..idx], &cfg, pw, wrt.as_mut())?
+      handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
    }
    Ok(())
 }

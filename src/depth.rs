@@ -87,10 +87,10 @@ impl Depth {
       Self { hash, counts, dalign, ins_hash }
    }
 
-   pub(crate) fn add_obs_vec(&mut self, obs: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>) {
+   pub(crate) fn add_obs_vec(&mut self, obs: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>, id: &str) {
       assert_eq!(obs.len(), self.counts.len());
       if let Some(d) = self.dalign.as_mut() {
-         if let Some(dall) = DetailedAlign::from_obs_vec(obs, qual, ins_hash, &self.hash) {
+         if let Some(dall) = DetailedAlign::from_obs_vec(obs, qual, ins_hash, &self.hash, id) {
             d.push(dall)
          }
       }

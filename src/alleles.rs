@@ -212,6 +212,7 @@ struct DelAllele {
    x: usize,
    len: usize,
    v: Vec<usize>,
+   ct: [usize; 2],
 }
 
 #[derive(Default)]
@@ -221,12 +222,12 @@ struct DelCluster {
    mean_len: f64,
    ss_x: f64,
    ss_len: f64,
-   n: usize,
+   n: [usize; 2],
 }
 
 impl fmt::Display for DelCluster {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      write!(f, "{:.2}\t{:.2}\t{}", self.mean_x, self.mean_len, self.n)
+      write!(f, "{:.2}\t{:.2}\t{}", self.mean_x, self.mean_len, self.n[0] + self.n[1])
    }
 }
 
@@ -238,12 +239,14 @@ fn update_mean_ss(mean: &mut f64, ss: &mut f64, n: f64, mean1: f64, ss1: f64, n1
 
 impl DelCluster {
 
+   fn total(&self) -> usize { self.n[0] + self.n[1] }
+
    // Add DelAllele to a cluster
    fn add_allele(&mut self, del: DelAllele) -> &mut Self {
-      let n = del.v.len();
-      self.n += n;
-      let n = n as f64;
-      let nn = self.n as f64;
+      self.n[0] += del.ct[0];
+      self.n[1] += del.ct[1];
+      let n = (del.ct[0] + del.ct[1]) as f64;
+      let nn = self.total() as f64;
       update_mean_ss(&mut self.mean_x, &mut self.ss_x, nn, del.x as f64, 0.0, n);
       update_mean_ss(&mut self.mean_len, &mut self.ss_len, nn, del.len as f64, 0.0, n);
       self.alleles.push(del);
@@ -252,23 +255,25 @@ impl DelCluster {
 
    // Merge two clusters
    fn merge(&mut self, mut other: Self) {
-      self.n += other.n;
-      let n = other.n as f64;
-      update_mean_ss(&mut self.mean_x, &mut self.ss_x, self.n as f64, other.mean_x, other.ss_x, n);
-      update_mean_ss(&mut self.mean_len, &mut self.ss_len, self.n as f64, other.mean_len, other.ss_len, n);
+      self.n[0] += other.n[0];
+      self.n[1] += other.n[1];
+      let n1 = other.total() as f64;
+      let n = self.total() as f64;
+      update_mean_ss(&mut self.mean_x, &mut self.ss_x, n, other.mean_x, other.ss_x, n1);
+      update_mean_ss(&mut self.mean_len, &mut self.ss_len, n, other.mean_len, other.ss_len, n1);
       self.alleles.extend_from_slice(&mut other.alleles);
    }
 
    fn dist(&self, other: &Self) -> f64 {
       // Find out how much the SS of the combined cluster would be increased over the sum of the SS of the component clusters
-      let nn = (self.n + other.n) as f64;
+      let nn = (self.total() + other.total()) as f64;
       let mut mn = self.mean_x;
       let mut ss_x = self.ss_x;
-      update_mean_ss(&mut mn, &mut ss_x, nn, other.mean_x, other.ss_x, other.n as f64);
+      update_mean_ss(&mut mn, &mut ss_x, nn, other.mean_x, other.ss_x, other.total() as f64);
       mn = self.mean_len;
       let mut ss_len = self.ss_len;
-      update_mean_ss(&mut mn, &mut ss_len, nn, other.mean_len, other.ss_len, other.n as f64);
-      ((ss_x + ss_len) / nn - (self.ss_x + self.ss_len) / (self.n as f64) + (other.ss_x + other.ss_len) / (other.n as f64)).sqrt()
+      update_mean_ss(&mut mn, &mut ss_len, nn, other.mean_len, other.ss_len, other.total() as f64);
+      ((ss_x + ss_len) / nn - (self.ss_x + self.ss_len) / (self.total() as f64) + (other.ss_x + other.ss_len) / (other.total() as f64)).sqrt()
    }
 
    fn get_median_and_percentiles<K, F>(&mut self, pcntg: f64, field: F) -> Option<(K, K, K)>
@@ -277,17 +282,18 @@ impl DelCluster {
       K: Ord + Copy
    {
       assert!(pcntg >= 0.0 && pcntg <= 1.0);
-      if self.n == 0 { None }
-      else if self.n == 1 {
+      let n = self.total();
+      if n == 0 { None }
+      else if n == 1 {
          let x = field(&self.alleles[0]);
          Some((x, x, x))
       } else {
          self.alleles.sort_unstable_by_key(&field);
          // Find entries corresponding to median and percentiles
          let mut wk = [
-            (self.n >> 1, None),
-            (((self.n as f64) * pcntg) as usize, None),
-            (((self.n as f64) * (1.0 - pcntg)) as usize, None)
+            (n >> 1, None),
+            (((n as f64) * pcntg) as usize, None),
+            (((n as f64) * (1.0 - pcntg)) as usize, None)
          ];
          let mut ct = 0;
          for a in self.alleles.iter() {
@@ -313,15 +319,14 @@ impl DelCluster {
 pub struct LargeDeletion {
    pub start: usize,
    pub length: usize,
-   pub n: usize,
    pub start_ci: [usize; 2],
    pub length_ci: [usize; 2],
    pub reads: Vec<usize>,
-   pub freq: f64,
+   pub counts: [[usize; 2];2],
 }
 
 impl LargeDeletion {
-   fn make(mut cl: DelCluster, total: f64) -> Self {
+   fn make(mut cl: DelCluster, total: [usize; 2]) -> Self {
       // We use the median and 2.5%, 97.5% percentiles independently for the start
       // and length (is there a more logical way to do this?)
 
@@ -329,15 +334,16 @@ impl LargeDeletion {
       let (length, lx1, lx2) = cl.get_median_and_percentiles(0.025, |a| a.len).expect("Empty cluster!");
 
       // Copy indices of all reads involved in deletion to reads vec
-      let mut reads = Vec::with_capacity(cl.n);
+      let mut reads = Vec::with_capacity(cl.n[0] + cl.n[1]);
       for a in cl.alleles.iter_mut() {
          reads.extend_from_slice(&mut a.v)
       }
 
-      // Frequency
-      let freq = (cl.n as f64) / total;
+      // Counts
+      assert!(cl.n[0] <= total[0] && cl.n[1] <= total[1]);
+      let counts = [[total[0] - cl.n[0], total[1] - cl.n[1]], [cl.n[0], cl.n[1]]];
 
-      LargeDeletion{start, length, n: cl.n, start_ci: [sx1, sx2], length_ci: [lx1, lx2], reads, freq}
+      LargeDeletion{start, length, start_ci: [sx1, sx2], length_ci: [lx1, lx2], reads, counts}
    }
 
    pub fn end(&self) -> usize { self.start + self.length - 1 }
@@ -353,6 +359,13 @@ impl LargeDeletion {
       let len = self.length as isize;
       (self.length_ci[x] as isize) - len
    }
+
+   pub fn n(&self) -> usize { self.counts[0][0] + self.counts[0][1] + self.counts[1][0] + self.counts[1][1] }
+
+   pub fn fq(&self) -> f64 {
+      ((self.counts[1][0] + self.counts[1][1]) as f64) /
+         (self.n() as f64)
+   }
 }
 
 impl fmt::Display for LargeDeletion {
@@ -365,11 +378,11 @@ impl fmt::Display for LargeDeletion {
 fn cluster_del_alleles(dv: &mut Vec<DelCluster>) {
    trace!("Clustering deletion alleles - starting with {}", dv.len());
    while dv.len() > 1 {
-      let mut min = (1, 0, dv[0].dist(&dv[1]), dv[0].n + dv[1].n);
+      let mut min = (1, 0, dv[0].dist(&dv[1]), dv[0].total() + dv[1].total());
       for (ix, cl) in dv[2..].iter().enumerate() {
          for (ix1, cl1) in dv[..ix + 2].iter().enumerate() {
             let d = cl.dist(cl1);
-            let n = cl.n + cl1.n;
+            let n = cl.total() + cl1.total();
             if d < min.2 || (d - min.2 < 1.0e-8 && n > min.3){
                min = (ix + 2, ix1, d, n)
             }
@@ -394,8 +407,8 @@ pub(crate) fn get_large_deletions(res: &[VcfRes], j: usize, k: usize, ref_len: u
    let sz = if y >= x { y + 1 - x } else { y + ref_len + 1 - x };
 
    let mut obs_all = AllDesc::new(sz);
-   let mut cts: Vec<usize> = vec!(0);
-   let mut ahash: HashMap<(usize, usize), (usize, Vec<usize>)> = HashMap::new();
+   let mut cts: Vec<[usize; 2]> = vec!([0; 2]);
+   let mut ahash: HashMap<(usize, usize), (usize, [usize; 2], Vec<usize>)> = HashMap::new();
    let hidx = HIDX as u8;
    let mut n_alls = 1;
    for (read_ix, dr) in dalign.iter().enumerate() {
@@ -411,44 +424,51 @@ pub(crate) fn get_large_deletions(res: &[VcfRes], j: usize, k: usize, ref_len: u
             let ix = if let Some((mut del_start, length)) = longest_del(&obs_all) {
                if length >= cfg.small_deletion_limit() {
                   del_start += start;
-                  if let Some((i, v)) = ahash.get_mut(&(del_start, length)) {
+                  if let Some((i, ct, v)) = ahash.get_mut(&(del_start, length)) {
                      v.push(read_ix);
+                     ct[str] += 1;
                      *i
                   } else {
                      let reads: Vec<usize> = vec!(read_ix);
-                     ahash.insert((del_start, length), (n_alls, reads));
+                     let mut ct = [0; 2];
+                     ct[str] += 1;
+                     ahash.insert((del_start, length), (n_alls, ct, reads));
                      n_alls += 1;
-                     cts.push(0);
+                     cts.push([0; 2]);
                      n_alls - 1
                   }
                } else { 0 }
             } else { 0 };
-            cts[ix] += 1;
+            cts[ix][str] += 1;
+            if ix == 0 {
+               trace!("Non-deleted allele: {}", dr.read_id);
+            }
          }
       }
    }
    let mut dv = Vec::with_capacity(n_alls);
-   for ((start, len), (_, v)) in ahash.drain() {
+   for ((start, len), (_, ct, v)) in ahash.drain() {
       let mut clust = DelCluster::default();
-      let del = DelAllele{x: start + x, len, v};
+      let del = DelAllele{x: start + x, len, ct, v};
       clust.add_allele(del);
       dv.push(clust);
    }
    // Cluster together alleles with similar start and end points
    cluster_del_alleles(&mut dv);
    // Remove low frequency clusters
-   let total = cts.iter().sum::<usize>() as f64;
+   let total = cts.iter().fold([0; 2], |s, ct| [s[0] + ct[0], s[1] + ct[1]]);
    let mut dv_old = dv;
-   let mut dv = Vec::new();
+   let mut tmp = Vec::new();
    for cl in dv_old.drain(..) {
-      let f = (cl.n as f64)/ total;
+      let f = (cl.total() as f64)/ ((total[0] + total[1]) as f64);
       if f >= cfg.indel_threshold(ThresholdType::Hard) {
-         dv.push(LargeDeletion::make(cl, total))
+         tmp.push(cl);
       } else {
-         cts[0] += cl.n;
+         trace!("Removing cluster {}: low frequency", cl);
       }
    }
-
+   let total = tmp.iter().fold(cts[0], |s, cl| [s[0] + cl.n[0], s[1] + cl.n[1]]);
+   let mut dv: Vec<_> = tmp.drain(..).map(|cl| LargeDeletion::make(cl, total)).collect();
    dv.sort_unstable_by(|d1, d2|
       match d1.start.cmp(&d2.start) {
          Ordering::Equal => d1.length.cmp(&d2.length),
@@ -456,9 +476,12 @@ pub(crate) fn get_large_deletions(res: &[VcfRes], j: usize, k: usize, ref_len: u
       });
 
    if log_enabled!(Trace) {
-      trace!("Non deletion allele: {} {}", cts[0], (cts[0] as f64) / total);
+      trace!("Non deletion allele: {} {}", cts[0][0] + cts[0][1], ((cts[0][0] + cts[0][1]) as f64) / ((total[0] + total[1]) as f64));
       for ld in dv.iter() {
-         trace!("Cluster: {} {}", ld, (ld.n as f64)/ total)
+         trace!("Cluster: {} {}", ld, ld.fq());
+         for dv in ld.reads.iter().map(|&i| &dalign[i]) {
+            trace!("\t{}", dv.read_id);
+         }
       }
    }
 

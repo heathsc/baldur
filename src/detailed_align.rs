@@ -10,6 +10,7 @@ pub(crate) struct DetailedAlign {
    pub(crate) seq_qual: Box<[(u8, u8)]>,
    pub(crate) ins_hash: HashMap<usize, (usize, u8)>,
    pub(crate) start: usize,
+   pub(crate) read_id: String,
 }
 
 impl DetailedAlign {
@@ -171,7 +172,7 @@ impl DetailedAlign {
          let strand_corr = if self.reverse() { HIDX as u8 } else { 0 };
          for (c, qual) in self.seq_qual[a .. b].iter() {
             let c1 = *c % (HIDX as u8);
-            let c = if c1 == 4 || c1 == BASES_SKIP as u8 {
+            let c = if c1 == 4 || c1 == BASES_SKIP as u8 || c1 == (4 + BASES_LOWQ as u8) {
                4 + strand_corr
             } else {
                strand_corr
@@ -184,7 +185,7 @@ impl DetailedAlign {
       if qn > 0 { Some( (qsum / qn) as u8) } else { None }
    }
 
-   fn from_vec_slice(seq: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>, start: usize, hash: &HashMap<u8, usize>) -> Self {
+   fn from_vec_slice(seq: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>, start: usize, hash: &HashMap<u8, usize>, id: &str) -> Self {
       assert_eq!(seq.len(), qual.len());
       let mut seq_qual = Vec::with_capacity(seq.len());
       for(s, &q) in seq.iter().zip(qual.iter())
@@ -193,11 +194,11 @@ impl DetailedAlign {
       {
          seq_qual.push((s, q))
       }
-      Self{ seq_qual: seq_qual.into_boxed_slice(), ins_hash, start}
+      Self{ seq_qual: seq_qual.into_boxed_slice(), ins_hash, start, read_id: id.to_string()}
    }
 
    // Find block of observed read
-   pub(crate) fn from_obs_vec(seq: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>, hash: &HashMap<u8, usize>) -> Option<Self> {
+   pub(crate) fn from_obs_vec(seq: &[u8], qual: &[u8], ins_hash: HashMap<usize, (usize, u8)>, hash: &HashMap<u8, usize>, id: &str) -> Option<Self> {
       if seq[0] == b' ' {
          // First base if unobserved.  Find first observed base
          if let Some((x, _)) = seq.iter().enumerate()
@@ -208,7 +209,7 @@ impl DetailedAlign {
                .find(|(_, &c)| c != b' ').map(|(i, _)| i)
                .unwrap();
             // Clone and make boxed slice of selected section
-            Some(Self::from_vec_slice(&seq[x..=y],&qual[x..=y], ins_hash, x, hash))
+            Some(Self::from_vec_slice(&seq[x..=y],&qual[x..=y], ins_hash, x, hash, id))
          } else {
             // No observed base, so return None
             None
@@ -233,14 +234,14 @@ impl DetailedAlign {
                                  .unwrap_or(BASES_LEN as u8), x)) {
                seq_qual.push((s, q))
             }
-            Some(Self{seq_qual: seq_qual.into_boxed_slice(), ins_hash, start: x})
+            Some(Self{seq_qual: seq_qual.into_boxed_slice(), ins_hash, start: x, read_id: id.to_string()})
          } else {
             // No following observed base, so just copy this first block
-            Some(Self::from_vec_slice(&seq[..y],&qual[..y], ins_hash, 0, hash))
+            Some(Self::from_vec_slice(&seq[..y],&qual[..y], ins_hash, 0, hash, id))
          }
       } else {
          // All bases are observed
-         Some(Self::from_vec_slice(seq, qual, ins_hash, 0, hash))
+         Some(Self::from_vec_slice(seq, qual, ins_hash, 0, hash, id))
       }
    }
 }

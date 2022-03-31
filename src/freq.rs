@@ -157,7 +157,7 @@ fn recalc_block(pw: &mut ProcWork, x: usize, y: usize, active_del: &[&LargeDelet
       }
    }
    // Prepare HashSet with reads in active deletion set
-   let nreads: usize = active_del.iter().map(|d| d.n).sum();
+   let nreads: usize = active_del.iter().map(|d| d.n()).sum();
    let mut read_hash = HashSet::with_capacity(nreads);
    for d in active_del.iter() {
       for &ix in d.reads.iter() {

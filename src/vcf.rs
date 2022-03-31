@@ -157,8 +157,10 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
    pub fn del_output(&self, del: &LargeDeletion) -> String {
       let mut f = String::new();
 
-      let fq = del.freq;
-      let sd = (fq * (1.0 - fq) / (del.n as f64)).sqrt();
+      let cts = del.counts;
+
+      let fq = del.fq();
+      let sd = (fq * (1.0 - fq) / (del.n() as f64)).sqrt();
       let z = fq / sd;
       let phred = if z > 10.0 { MAX_PHRED }
       else {
@@ -173,7 +175,8 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
       let _ = write!(f, "\tSVTYPE=DEL;END={};SVLEN={};CIPOS={},{};CILEN={},{}", del.end() + 1,
                      del.length, del.pos_ci(0), del.pos_ci(1), del.len_ci(0), del.len_ci(1));
       // FORMAT
-      let _ = write!(f, "\tGT:HPL\t0/1:{:.5}", fq);
+      let _ = write!(f, "\tGT:ADF:ADR:HPL\t0/1:{},{}:{},{}:{:.5}",
+                     cts[0][0], cts[1][0], cts[0][1], cts[1][1], fq);
       f
    }
 
