@@ -128,6 +128,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.1.4 Switch to using compress_io from crates.io
 - 1.1.3 Add allele count output for long deletion alleles.  Correct bug where low quality deletions were being counted as non-deleted alleles.
 - 1.1.2 Fix bug in merging of deletion alleles (introduced in 1.1.0)
 - 1.1.1 Change default quality thresholds for bases and indels to 30 and 20 respectively, and change default indel threshold to 0.025, 0.1 (hard, soft).

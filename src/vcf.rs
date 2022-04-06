@@ -5,7 +5,11 @@ use std::{
 
 use log::Level::Trace;
 
-use compress_io::{compress::CompressIo, compress_type::CompressType};
+use compress_io::{
+   compress::{CompressIo, Writer},
+   compress_type::CompressType,
+};
+
 use r_htslib::*;
 
 use crate::{
@@ -412,7 +416,7 @@ impl fmt::Display for Filter {
    }
 }
 
-pub fn write_vcf_header(sam_hdr: &SamHeader, cfg: &Config) -> io::Result<BufWriter<Box<dyn Write>>> {
+pub fn write_vcf_header(sam_hdr: &SamHeader, cfg: &Config) -> io::Result<BufWriter<Writer>> {
 
    let vcf_output = format!("{}.vcf", cfg.output_prefix());
    let reg = cfg.region();
