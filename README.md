@@ -43,7 +43,7 @@ where the rust compiler can find it.  Note that *baldur* has been tested with ve
 Clone the repository and then from the baldur directory
 use cargo to compile the application:
 ```
-    git clone git@github.com:heathsc/baldur.git
+    git clone https://github.com/heathsc/baldur.git
     cd baldur
     cargo build --release
 ```
@@ -128,6 +128,8 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.1.5 Switch compress_io version to 0.5.
+- 1.1.5 Change documentation to suggest using https rather than ssh
 - 1.1.4 Switch to using compress_io from crates.io
 - 1.1.3 Add allele count output for long deletion alleles.  Correct bug where low quality deletions were being counted as non-deleted alleles.
 - 1.1.2 Fix bug in merging of deletion alleles (introduced in 1.1.0)
