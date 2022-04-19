@@ -128,6 +128,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.1.6 Switch to r_htslib 0.3
 - 1.1.5 Switch compress_io version to 0.5.
 - 1.1.5 Change documentation to suggest using https rather than ssh
 - 1.1.4 Switch to using compress_io from crates.io

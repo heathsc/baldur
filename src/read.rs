@@ -210,19 +210,19 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
       }
       if align_store.changed() {
          let depth = &mut proc_work.depth;
-         depth.add_obs_vec(align_store.seq(), align_store.qual(), ins_hash, blst[0].qname());
+         depth.add_obs_vec(align_store.seq(), align_store.qual(), ins_hash, blst[0].qname()?);
          if let Some(w) = wrt {
             w.write_all(align_store.seq())?;
             if let Some(b) = blst.get(0) {
-               write!(w, "\t{}", b.qname())?;
+               write!(w, "\t{}", b.qname()?)?;
             }
             writeln!(w)?;
          }
          if let Some(b) = blst.get(0) {
             let z = (tot_mm[1] as f64) / ((tot_mm[0] + tot_mm[1]) as f64);
-//            println!("{}\t{:.6}\t{}\t{}", b.qname(), z, tot_mm[0], tot_mm[1]);
+//            println!("{}\t{:.6}\t{}\t{}", b.qname()?, z, tot_mm[0], tot_mm[1]);
             if z >= 0.1 {
-               warn!("High mismatch rate for read {}\t{:.6}\t{}\t{}", b.qname(), z, tot_mm[0], tot_mm[1]);
+               warn!("High mismatch rate for read {}\t{:.6}\t{}\t{}", b.qname()?, z, tot_mm[0], tot_mm[1]);
             }
          }
       }
@@ -245,40 +245,28 @@ pub(crate) fn read_file(sam_file: &mut HtsFile, sam_hdr: &mut SamHeader, cfg: &C
    let mut b = BamRec::new()?;
    let mut idx = 0;
 
-   loop {
-      b = match b.read(sam_file, sam_hdr) {
-         SamReadResult::Ok(mut b) => {
-            if b.tid() == Some(reg.tid()) && b.qual() >= cfg.mapq_threshold() {
-               if idx > 0 {
-                  if !b.qnames_eq(&blst[0]) {
-                     if idx <= MAX_SPLIT {
-                        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
-                     }
-                     b.swap(&mut blst[0]);
-                     idx = 1;
-                  } else {
-                     if idx < MAX_SPLIT {
-                        b.swap(&mut blst[idx]);
-                     }
-                     idx += 1;
-                  }
-               } else {
-                  b.swap(&mut blst[0]);
-                  idx = 1;
+   while b.read(sam_file, sam_hdr)? {
+      if b.tid() == Some(reg.tid()) && b.qual() >= cfg.mapq_threshold() {
+         if idx > 0 {
+            if !b.qnames_eq(&blst[0])? {
+               if idx <= MAX_SPLIT {
+                  handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
                }
+               b.swap(&mut blst[0]);
+               idx = 1;
+            } else {
+               if idx < MAX_SPLIT {
+                  b.swap(&mut blst[idx]);
+               }
+               idx += 1;
             }
-            b
+         } else {
+            b.swap(&mut blst[0]);
+            idx = 1;
          }
-         SamReadResult::EOF => {
-            debug!("End of file");
-            break;
-         }
-         SamReadResult::Error => {
-            error!("Error reading in sam record");
-            break;
-         }
-      };
+      }
    }
+
    // Process remaining reads (if any)
    if idx > 0 && idx <= MAX_SPLIT {
       handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
