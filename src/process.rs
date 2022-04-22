@@ -62,7 +62,7 @@ fn output_calibration_data(cfg: &Config, pw: &ProcWork) -> io::Result<()> {
     Ok(())
 }
 
-pub fn process_data(mut sam_file: HtsFile, mut sam_hdr: SamHeader, cfg: Config) -> io::Result<()> {
+pub fn process_data(mut hts_file: Hts, cfg: Config) -> io::Result<()> {
 
     let reg = cfg.region();
     let ref_seq = cfg.reference().contig(reg.tid()).unwrap().seq();
@@ -73,16 +73,21 @@ pub fn process_data(mut sam_file: HtsFile, mut sam_hdr: SamHeader, cfg: Config) 
         ref_seq,
     };
 
+    let (sam_file, hdr) = hts_file.hts_file_and_header();
+    let hdr = hdr.unwrap();
+
     // Read in input file, collect information, write out view file
-    read_file(&mut sam_file, &mut sam_hdr, &cfg, &mut pw)?;
+    read_file(sam_file, hdr, &cfg, &mut pw)?;
 
     // Output calibration data if requested
     output_calibration_data(&cfg, &pw)?;
 
+    let sam_hdr = if let HtsHdr::Sam(h) = hdr { h } else { panic!("Incorrect header")};
+
     let depth_output = format!("{}_depth.txt", cfg.output_prefix());
     let mut wrt = BufWriter::new(File::create(&depth_output)?);
     let mut vcf_wrt = if !cfg.no_call() {
-        Some(write_vcf_header(&sam_hdr, &cfg)?)
+        Some(write_vcf_header(sam_hdr, &cfg)?)
     } else {
         None
     };

@@ -25,6 +25,6 @@ pub fn io_err(s: String) -> io::Error {
 }
 
 fn main() -> io::Result<()> {
-    let (infile, sam_hdr, cfg) = cli::handle_cli()?;
-    process::process_data(infile, sam_hdr, cfg)
+    let (infile, cfg) = cli::handle_cli()?;
+    process::process_data(infile, cfg)
 }

@@ -230,7 +230,7 @@ fn handle_read<'a, W: Write>(blst: &mut [BamRec], cfg: &Config, proc_work: &mut 
    Ok(())
 }
 
-pub(crate) fn read_file(sam_file: &mut HtsFile, sam_hdr: &mut SamHeader, cfg: &Config, pw: &mut ProcWork) -> io::Result<()> {
+pub(crate) fn read_file(sam_file: &mut HtsFile, hdr: &mut HtsHdr, cfg: &Config, pw: &mut ProcWork) -> io::Result<()> {
    let reg = cfg.region();
 
    let mut wrt = if cfg.view() {
@@ -245,7 +245,7 @@ pub(crate) fn read_file(sam_file: &mut HtsFile, sam_hdr: &mut SamHeader, cfg: &C
    let mut b = BamRec::new()?;
    let mut idx = 0;
 
-   while b.read(sam_file, sam_hdr)? {
+   while b.read(sam_file, Some(hdr))? {
       if b.tid() == Some(reg.tid()) && b.qual() >= cfg.mapq_threshold() {
          if idx > 0 {
             if !b.qnames_eq(&blst[0])? {

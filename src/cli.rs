@@ -7,7 +7,7 @@ use regex::{Match, Regex};
 
 use clap::{Command, Arg, crate_version};
 use compress_io::compress::CompressIo;
-use r_htslib::{HtsFile, SamHeader};
+use r_htslib::{Hts, HtsHdr};
 
 use super::io_err;
 use crate::reference::Reference;
@@ -327,7 +327,7 @@ fn read_qual_calib(file: &str, max_qual: u8) -> io::Result<[[[u8; 2]; N_QUAL]; N
    Ok(cal)
 }
 
-pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
+pub fn handle_cli<'a>() -> io::Result<(Hts<'a>, Config)> {
    let m = Command::new("baldur")
       .version(crate_version!())
       .author("Simon Heath")
@@ -535,17 +535,19 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
 
    let input = m.value_of("input").unwrap_or("-");
 
-   let mut sam_file = HtsFile::new(input, "r")?;
-   debug!("Opened file {} for input", &input);
+   let hts = Hts::open(input, "r")?;
 
-   let sam_hdr = SamHeader::read(&mut sam_file)?;
-   debug!("Read SAM header");
+   let hdr = if let Some(HtsHdr::Sam(hdr)) = hts.header() { hdr } else {
+      return Err(io_err("Wrong input file type (expected SAM/BAM/CRAM)".to_string()));
+   };
+
+   debug!("Opened file {} for input", &input);
 
    let ref_file = m.value_of("reference").expect("Missing reference"); // Should be enforced by clap
 
    let rdr = CompressIo::new().path(ref_file).bufreader()?;
    debug!("Opened {} for input", ref_file);
-   let reference = Reference::from_reader(rdr, &sam_hdr)?;
+   let reference = Reference::from_reader(rdr, hdr)?;
    if reference.n_contigs() == 0 {
       return Err(io_err(format!(
          "No contigs read in from reference file {}",
@@ -575,12 +577,12 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
             ));
          }
          let tid = reference.contigs().keys().next().expect("Empty reference");
-         Region::from_str(sam_hdr.tid2name(*tid), &reference)?
+         Region::from_str(hdr.tid2name(*tid), &reference)?
       }
    };
 
    let blacklist = m.value_of("blacklist").map(|file| {
-      read_blacklist(file, sam_hdr.tid2name(region.tid))
+      read_blacklist(file, hdr.tid2name(region.tid))
          .expect("Could not read in blacklist from file")
    });
 
@@ -590,7 +592,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
    });
 
    let rs = m.value_of("rs_list").map(|file| {
-      read_rslist(file, sam_hdr.tid2name(region.tid))
+      read_rslist(file, hdr.tid2name(region.tid))
          .expect("Could not read in rs list from file")
    });
 
@@ -603,8 +605,7 @@ pub fn handle_cli() -> io::Result<(HtsFile, SamHeader, Config)> {
       .expect("Missing indel_thresholds");
 
    Ok((
-      sam_file,
-      sam_hdr,
+      hts,
       Config {
          output_prefix,
          sample,
