@@ -327,7 +327,7 @@ fn read_qual_calib(file: &str, max_qual: u8) -> io::Result<[[[u8; 2]; N_QUAL]; N
    Ok(cal)
 }
 
-pub fn handle_cli<'a>() -> io::Result<(Hts<'a>, Config)> {
+pub fn handle_cli() -> io::Result<(Hts, Config)> {
    let m = Command::new("baldur")
       .version(crate_version!())
       .author("Simon Heath")
