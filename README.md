@@ -128,6 +128,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.1.8 Switch to r_htslib 0.5
 - 1.1.7 Add extra thread to Hts reading
 - 1.1.7 Switch to r_htslib 0.4
 - 1.1.6 Switch to r_htslib 0.3

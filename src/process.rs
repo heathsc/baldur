@@ -73,16 +73,16 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> io::Result<()> {
         ref_seq,
     };
 
-    let (sam_file, hdr) = hts_file.hts_file_and_header();
-    let hdr = hdr.unwrap();
 
     let threadpool = HtsThreadPool::new(1);
     if let Some(th) = threadpool.as_ref() {
-        sam_file.set_thread_pool(th)?
+        hts_file.hts_file().set_thread_pool(th)?
     }
 
     // Read in input file, collect information, write out view file
-    read_file(sam_file, hdr, &cfg, &mut pw)?;
+    read_file(&mut hts_file, &cfg, &mut pw)?;
+
+    let hdr = hts_file.header().unwrap();
 
     // Output calibration data if requested
     output_calibration_data(&cfg, &pw)?;
