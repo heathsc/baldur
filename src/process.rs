@@ -76,7 +76,7 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> io::Result<()> {
 
     let threadpool = HtsThreadPool::new(1);
     if let Some(th) = threadpool.as_ref() {
-        hts_file.hts_file().set_thread_pool(th)?
+        hts_file.hts_file_mut().set_thread_pool(th)?
     }
 
     // Read in input file, collect information, write out view file
