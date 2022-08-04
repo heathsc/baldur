@@ -1,4 +1,4 @@
-## baldur
+## baldur &emsp; [![DOI](https://zenodo.org/badge/470461231.svg)](https://zenodo.org/badge/latestdoi/470461231)
 Variant (SNV, small indel and large deletion) calling from ONT sequencing data on the mitochondria 
 
  - [Introduction](#intro)
