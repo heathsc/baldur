@@ -5,7 +5,7 @@ use clap::ArgMatches;
 /// Relevant options:
 ///
 ///   loglevel: can be error, warn, info, trace or none.  Default is info
-///   quiet: turns off all loggin irrespective of loglevel
+///   quiet: turns off all logging irrespective of loglevel
 ///   timestamp: sets timestamp options for logger
 ///
 ///   loglevel none is a synonym for the quiet option
