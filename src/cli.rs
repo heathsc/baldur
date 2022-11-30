@@ -535,7 +535,7 @@ pub fn handle_cli() -> io::Result<(Hts, Config)> {
 
    let input = m.value_of("input").unwrap_or("-");
 
-   let hts = Hts::open(input, "r")?;
+   let hts = Hts::open(Some(input), "r")?;
 
    let hdr = if let Some(HtsHdr::Sam(hdr)) = hts.header() { hdr } else {
       return Err(io_err("Wrong input file type (expected SAM/BAM/CRAM)".to_string()));
