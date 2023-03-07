@@ -19,6 +19,7 @@ mod align_store;
 mod read;
 mod stat_funcs;
 mod freq;
+mod deletions;
 
 pub fn io_err(s: String) -> io::Error {
     io::Error::new(io::ErrorKind::Other, s)

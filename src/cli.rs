@@ -1,334 +1,369 @@
 use std::{
-   collections::{HashMap, HashSet},
-   io::{self, BufRead, Error, ErrorKind},
+    collections::{HashMap, HashSet},
+    io::{self, BufRead, Error, ErrorKind},
 };
 
 use regex::{Match, Regex};
 
-use clap::{Command, Arg, crate_version};
+use clap::{crate_version, Arg, Command};
 use compress_io::compress::CompressIo;
 use r_htslib::{Hts, HtsHdr};
 
 use super::io_err;
-use crate::reference::Reference;
 use crate::model::{setup_qual_model, N_QUAL};
+use crate::reference::Reference;
 
 pub struct Region {
-   tid: usize,
-   start: usize,
-   stop: usize,
-   ctg_size: usize,
+    tid: usize,
+    start: usize,
+    stop: usize,
+    ctg_size: usize,
 }
 
 fn parse_usize_with_commas(s: &str) -> Option<usize> {
-   s.replace(',', "").parse::<usize>().ok()
+    s.replace(',', "").parse::<usize>().ok()
 }
 
 impl Region {
-   pub fn from_str(reg_str: &str, reference: &Reference) -> io::Result<Self> {
-      let err = |s| {
-         Err(Error::new(
-            ErrorKind::Other,
-            format!("Could not parse region string '{}'", s),
-         ))
-      };
+    pub fn from_str(reg_str: &str, reference: &Reference) -> io::Result<Self> {
+        let err = |s| {
+            Err(Error::new(
+                ErrorKind::Other,
+                format!("Could not parse region string '{}'", s),
+            ))
+        };
 
-      let parse_x = |s: Match| parse_usize_with_commas(s.as_str());
+        let parse_x = |s: Match| parse_usize_with_commas(s.as_str());
 
-      let reg = Regex::new(r#"^([^:]+):?([0-9,]+)?-?([0-9,]+)?"#).unwrap();
-      if let Some(cap) = reg.captures(reg_str) {
-         match (cap.get(1), cap.get(2), cap.get(3)) {
-            (Some(c), None, None) => Self::new(c.as_str(), None, None, reference),
-            (Some(c), Some(p), None) => Self::new(c.as_str(), parse_x(p), None, reference),
-            (Some(c), Some(p), Some(q)) => {
-               Self::new(c.as_str(), parse_x(p), parse_x(q), reference)
+        let reg = Regex::new(r#"^([^:]+):?([0-9,]+)?-?([0-9,]+)?"#).unwrap();
+        if let Some(cap) = reg.captures(reg_str) {
+            match (cap.get(1), cap.get(2), cap.get(3)) {
+                (Some(c), None, None) => Self::new(c.as_str(), None, None, reference),
+                (Some(c), Some(p), None) => Self::new(c.as_str(), parse_x(p), None, reference),
+                (Some(c), Some(p), Some(q)) => {
+                    Self::new(c.as_str(), parse_x(p), parse_x(q), reference)
+                }
+                _ => err(reg_str),
             }
-            _ => err(reg_str),
-         }
-      } else {
-         err(reg_str)
-      }
-   }
+        } else {
+            err(reg_str)
+        }
+    }
 
-   pub fn new(
-      chrom: &str,
-      start: Option<usize>,
-      stop: Option<usize>,
-      reference: &Reference,
-   ) -> io::Result<Self> {
-      let ctg = reference.name2contig(chrom).ok_or_else(|| {
-         Error::new(
-            ErrorKind::Other,
-            format!("Contig {} not present in input file", chrom),
-         )
-      })?;
-      let start = start.unwrap_or(1).max(1) - 1;
-      let ctg_size = ctg.size();
-      assert!(ctg_size > 0, "Zero sized contig!");
-      let stop = stop.unwrap_or(ctg_size).max(1).min(ctg_size) - 1;
-      debug!("Chromosome region: {}:{}-{}", ctg.name(), start, stop);
-      if stop >= start {
-         Ok(Region {
-            tid: ctg.tid(),
-            start,
-            stop,
-            ctg_size,
-         })
-      } else {
-         Err(Error::new(
-            ErrorKind::Other,
-            "Invalid range - stop < start".to_string(),
-         ))
-      }
-   }
+    pub fn new(
+        chrom: &str,
+        start: Option<usize>,
+        stop: Option<usize>,
+        reference: &Reference,
+    ) -> io::Result<Self> {
+        let ctg = reference.name2contig(chrom).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Other,
+                format!("Contig {} not present in input file", chrom),
+            )
+        })?;
+        let start = start.unwrap_or(1).max(1) - 1;
+        let ctg_size = ctg.size();
+        assert!(ctg_size > 0, "Zero sized contig!");
+        let stop = stop.unwrap_or(ctg_size).max(1).min(ctg_size) - 1;
+        debug!("Chromosome region: {}:{}-{}", ctg.name(), start, stop);
+        if stop >= start {
+            Ok(Region {
+                tid: ctg.tid(),
+                start,
+                stop,
+                ctg_size,
+            })
+        } else {
+            Err(Error::new(
+                ErrorKind::Other,
+                "Invalid range - stop < start".to_string(),
+            ))
+        }
+    }
 
-   pub fn tid(&self) -> usize {
-      self.tid
-   }
+    pub fn tid(&self) -> usize {
+        self.tid
+    }
 
-   pub fn start(&self) -> usize {
-      self.start
-   }
+    pub fn start(&self) -> usize {
+        self.start
+    }
 
-   pub fn len(&self) -> usize {
-      self.stop + 1 - self.start
-   }
+    pub fn len(&self) -> usize {
+        self.stop + 1 - self.start
+    }
 
-   pub fn ctg_size(&self) -> usize {
-      self.ctg_size
-   }
+    pub fn ctg_size(&self) -> usize {
+        self.ctg_size
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
-pub enum ThresholdType {Hard, Soft}
+pub enum ThresholdType {
+    Hard,
+    Soft,
+}
 
 impl ThresholdType {
-   fn idx(&self) -> usize {
-      match self {
-         Self::Hard => 0,
-         Self::Soft => 1,
-      }
-   }
+    fn idx(&self) -> usize {
+        match self {
+            Self::Hard => 0,
+            Self::Soft => 1,
+        }
+    }
 }
 
 pub struct Config {
-   region: Region,
-   reference: Reference,
-   output_prefix: Box<str>,
-   sample: Option<Box<str>>,
-   adjust: usize,
-   small_deletion_limit: usize,
-   blacklist: Option<HashSet<usize>>,
-   qual_calib: Option<[[[u8; 2]; N_QUAL] ;N_QUAL]>,
-   rs: Option<HashMap<usize, Box<str>>>,
-   snv_thresholds: [f64; 2],
-   indel_thresholds: [f64; 2],
-   qual_table: [f64; N_QUAL],
-   mapq_threshold: u8,
-   qual_threshold: u8,
-   max_qual: u8,
-   max_indel_qual: u8,
-   homopolymer_limit: u8,
-   paired_end: bool,
-   no_call: bool,
-   output_qual_calib: bool,
-   view: bool,
+    region: Region,
+    reference: Reference,
+    output_prefix: Box<str>,
+    sample: Option<Box<str>>,
+    adjust: usize,
+    small_deletion_limit: usize,
+    blacklist: Option<HashSet<usize>>,
+    qual_calib: Option<[[[u8; 2]; N_QUAL]; N_QUAL]>,
+    rs: Option<HashMap<usize, Box<str>>>,
+    snv_thresholds: [f64; 2],
+    indel_thresholds: [f64; 2],
+    qual_table: [f64; N_QUAL],
+    mapq_threshold: u8,
+    qual_threshold: u8,
+    max_qual: u8,
+    max_indel_qual: u8,
+    homopolymer_limit: u8,
+    paired_end: bool,
+    no_call: bool,
+    output_qual_calib: bool,
+    view: bool,
+    output_deletions: bool,
 }
 
 impl Config {
-   pub fn region(&self) -> &Region {
-      &self.region
-   }
+    pub fn region(&self) -> &Region {
+        &self.region
+    }
 
-   pub fn mapq_threshold(&self) -> u8 {
-      self.mapq_threshold
-   }
+    pub fn mapq_threshold(&self) -> u8 {
+        self.mapq_threshold
+    }
 
-   pub fn qual_threshold(&self) -> u8 {
-      self.qual_threshold
-   }
+    pub fn qual_threshold(&self) -> u8 {
+        self.qual_threshold
+    }
 
-   pub fn snv_threshold(&self, t: ThresholdType) -> f64 {
-      self.snv_thresholds[ t.idx() ]
-   }
+    pub fn snv_threshold(&self, t: ThresholdType) -> f64 {
+        self.snv_thresholds[t.idx()]
+    }
 
-   pub fn indel_threshold(&self, t: ThresholdType) -> f64 {
-      self.indel_thresholds[ t.idx() ]
-   }
+    pub fn indel_threshold(&self, t: ThresholdType) -> f64 {
+        self.indel_thresholds[t.idx()]
+    }
 
-   pub fn max_qual(&self) -> u8 { self.max_qual }
+    pub fn max_qual(&self) -> u8 {
+        self.max_qual
+    }
 
-   pub fn max_indel_qual(&self) -> u8 { self.max_indel_qual }
+    pub fn max_indel_qual(&self) -> u8 {
+        self.max_indel_qual
+    }
 
-   pub fn homopolymer_limit(&self) -> u8 {
-      self.homopolymer_limit
-   }
+    pub fn homopolymer_limit(&self) -> u8 {
+        self.homopolymer_limit
+    }
 
-   pub fn paired_end(&self) -> bool {
-      self.paired_end
-   }
+    pub fn paired_end(&self) -> bool {
+        self.paired_end
+    }
 
-   pub fn no_call(&self) -> bool {
-      self.no_call
-   }
+    pub fn no_call(&self) -> bool {
+        self.no_call
+    }
 
-   pub fn view(&self) -> bool {
-      self.view
-   }
+    pub fn view(&self) -> bool {
+        self.view
+    }
 
-   pub fn have_qual_calib(&self) -> bool { self.qual_calib.is_some() }
+    pub fn output_deletions(&self) -> bool {
+        self.output_deletions
+    }
 
-   pub fn output_qual_calib(&self) -> bool {
-      self.output_qual_calib
-   }
+    pub fn have_qual_calib(&self) -> bool {
+        self.qual_calib.is_some()
+    }
 
-   pub fn output_prefix(&self) -> &str {
-      &self.output_prefix
-   }
+    pub fn output_qual_calib(&self) -> bool {
+        self.output_qual_calib
+    }
 
-   pub fn sample(&self) -> Option<&str> {
-      self.sample.as_ref().map(|x| x as &str)
-   }
+    pub fn output_prefix(&self) -> &str {
+        &self.output_prefix
+    }
 
-   pub fn adjust(&self) -> usize {
-      self.adjust
-   }
+    pub fn sample(&self) -> Option<&str> {
+        self.sample.as_ref().map(|x| x as &str)
+    }
 
-   pub fn small_deletion_limit(&self) -> usize {
-      self.small_deletion_limit
-   }
+    pub fn adjust(&self) -> usize {
+        self.adjust
+    }
 
-   pub fn reference(&self) -> &Reference {
-      &self.reference
-   }
+    pub fn small_deletion_limit(&self) -> usize {
+        self.small_deletion_limit
+    }
 
-   pub fn blacklist(&self, x: usize) -> bool {
-      match &self.blacklist {
-         Some(m) => m.contains(&x),
-         None => false,
-      }
-   }
+    pub fn reference(&self) -> &Reference {
+        &self.reference
+    }
 
-   pub fn qual_calib(&self, ctxt: usize, q: u8) -> Option<&[u8; 2]> {
-      self.qual_calib.as_ref().map(|v| {
-         &v[ctxt as usize][if q != 61 { q.min(self.max_qual) as usize } else { 61 } ]
-      })
-   }
+    pub fn blacklist(&self, x: usize) -> bool {
+        match &self.blacklist {
+            Some(m) => m.contains(&x),
+            None => false,
+        }
+    }
 
-   pub fn qual_table(&self) -> &[f64; N_QUAL] { &self.qual_table }
+    pub fn qual_calib(&self, ctxt: usize, q: u8) -> Option<&[u8; 2]> {
+        self.qual_calib.as_ref().map(|v| {
+            &v[ctxt as usize][if q != 61 {
+                q.min(self.max_qual) as usize
+            } else {
+                61
+            }]
+        })
+    }
 
-   pub fn rs(&self, x: usize) -> Option<&str> {
-      self.rs
-         .as_ref()
-         .and_then(|h| h.get(&x).map(|s| s as &str))
-   }
+    pub fn qual_table(&self) -> &[f64; N_QUAL] {
+        &self.qual_table
+    }
+
+    pub fn rs(&self, x: usize) -> Option<&str> {
+        self.rs.as_ref().and_then(|h| h.get(&x).map(|s| s as &str))
+    }
 }
 
 fn read_blacklist(file: &str, ctg: &str) -> io::Result<HashSet<usize>> {
-   let mut rdr = CompressIo::new().path(file).bufreader()?;
-   let mut buf = String::new();
-   let mut hs = HashSet::new();
-   debug!("Reading in blacklist from {}", file);
-   let mut cts = (0, 0);
-   loop {
-      if rdr.read_line(&mut buf)? == 0 {
-         break;
-      }
-      let fields: Vec<_> = buf.trim().split('\t').collect();
-      if fields[0] == ctg {
-         cts.0 += 1;
-         let i = fields[1].parse::<usize>();
-         let j = fields[2].parse::<usize>();
-         if let (Ok(i1), Ok(j1)) = (i, j) {
-            if j1 > i1 {
-               cts.1 += j1 - i1;
-               for ix in i1..j1 {
-                  hs.insert(ix + 1);
-               }
+    let mut rdr = CompressIo::new().path(file).bufreader()?;
+    let mut buf = String::new();
+    let mut hs = HashSet::new();
+    debug!("Reading in blacklist from {}", file);
+    let mut cts = (0, 0);
+    loop {
+        if rdr.read_line(&mut buf)? == 0 {
+            break;
+        }
+        let fields: Vec<_> = buf.trim().split('\t').collect();
+        if fields[0] == ctg {
+            cts.0 += 1;
+            let i = fields[1].parse::<usize>();
+            let j = fields[2].parse::<usize>();
+            if let (Ok(i1), Ok(j1)) = (i, j) {
+                if j1 > i1 {
+                    cts.1 += j1 - i1;
+                    for ix in i1..j1 {
+                        hs.insert(ix + 1);
+                    }
+                }
             }
-         }
-      }
-      buf.clear();
-   }
-   debug!("Entries read: {}, sites: {}", cts.0, cts.1);
-   Ok(hs)
+        }
+        buf.clear();
+    }
+    debug!("Entries read: {}, sites: {}", cts.0, cts.1);
+    Ok(hs)
 }
 
 fn read_rslist(file: &str, ctg: &str) -> io::Result<HashMap<usize, Box<str>>> {
-   let mut rdr = CompressIo::new().path(file).bufreader()?;
-   let mut buf = String::new();
-   let mut hs = HashMap::new();
-   debug!("Reading in rs list from {}", file);
-   let mut cts = 0;
-   loop {
-      if rdr.read_line(&mut buf)? == 0 {
-         break;
-      }
-      let fields: Vec<_> = buf.split('\t').collect();
-      if fields[0] == ctg {
-         let i = fields[1].parse::<usize>();
-         let j = fields[2].parse::<usize>();
-         if let (Ok(i1), Ok(j1)) = (i, j) {
-            if j1 == i1 + 1 {
-               hs.insert(j1, Box::from(fields[3]));
-               cts += 1;
+    let mut rdr = CompressIo::new().path(file).bufreader()?;
+    let mut buf = String::new();
+    let mut hs = HashMap::new();
+    debug!("Reading in rs list from {}", file);
+    let mut cts = 0;
+    loop {
+        if rdr.read_line(&mut buf)? == 0 {
+            break;
+        }
+        let fields: Vec<_> = buf.split('\t').collect();
+        if fields[0] == ctg {
+            let i = fields[1].parse::<usize>();
+            let j = fields[2].parse::<usize>();
+            if let (Ok(i1), Ok(j1)) = (i, j) {
+                if j1 == i1 + 1 {
+                    hs.insert(j1, Box::from(fields[3]));
+                    cts += 1;
+                }
             }
-         }
-      }
-      buf.clear();
-   }
-   debug!("Entries read: {}", cts);
-   Ok(hs)
+        }
+        buf.clear();
+    }
+    debug!("Entries read: {}", cts);
+    Ok(hs)
 }
 
 fn read_qual_calib(file: &str, max_qual: u8) -> io::Result<[[[u8; 2]; N_QUAL]; N_QUAL]> {
-   let mut rdr = CompressIo::new().path(file).bufreader()?;
-   let mut buf = String::new();
-   let mut cal =  [[[0, 0];N_QUAL];N_QUAL];
+    let mut rdr = CompressIo::new().path(file).bufreader()?;
+    let mut buf = String::new();
+    let mut cal = [[[0, 0]; N_QUAL]; N_QUAL];
 
-   debug!("Reading in quality calibration from {}", file);
-   let mut line = 0;
-   loop {
-      if rdr.read_line(&mut buf)? == 0 {
-         break;
-      }
-      if line > 0
-      {
-         let fields: Vec<_> = buf.trim_end().split('\t').collect();
-         if fields.len() != 6 * 65 + 1 {
-            return  Err(Error::new(
-               ErrorKind::Other,
-               format!("Wrong number of fields at line {} of file {} (seen {}, expected {})",
-                       line + 1, file, fields.len(), 6 * 65 + 1),
-            ))
-         }
-         let q = fields[0].parse::<usize>().map_err(|e|
-            Error::new(
-               ErrorKind::Other,
-               format!("Could not parse quality score from column 1 at line {} of file {}: {}", line + 1, file, e
-            )))?;
-         for (ctxt, calp) in cal.iter_mut().enumerate() {
-            let ix = ctxt * 6 + 7;
-            let mut q1 = [0, 0];
-            for k in 0..2 {
-               let z = fields[ix + k].parse::<f64>().map_err(|e|
-                  Error::new(
-                     ErrorKind::Other,
-                     format!("Could not parse float from column {} at line {} of file {}: {}", ix + 1, line + 1, file, e
-                     )))?;
-               q1[k] = z.round().min(max_qual as f64) as u8;
+    debug!("Reading in quality calibration from {}", file);
+    let mut line = 0;
+    loop {
+        if rdr.read_line(&mut buf)? == 0 {
+            break;
+        }
+        if line > 0 {
+            let fields: Vec<_> = buf.trim_end().split('\t').collect();
+            if fields.len() != 6 * 65 + 1 {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "Wrong number of fields at line {} of file {} (seen {}, expected {})",
+                        line + 1,
+                        file,
+                        fields.len(),
+                        6 * 65 + 1
+                    ),
+                ));
             }
-            calp[q] = q1;
-         }
-      }
-      line += 1;
-      buf.clear();
-   }
-   Ok(cal)
+            let q = fields[0].parse::<usize>().map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "Could not parse quality score from column 1 at line {} of file {}: {}",
+                        line + 1,
+                        file,
+                        e
+                    ),
+                )
+            })?;
+            for (ctxt, calp) in cal.iter_mut().enumerate() {
+                let ix = ctxt * 6 + 7;
+                let mut q1 = [0, 0];
+                for k in 0..2 {
+                    let z = fields[ix + k].parse::<f64>().map_err(|e| {
+                        Error::new(
+                            ErrorKind::Other,
+                            format!(
+                                "Could not parse float from column {} at line {} of file {}: {}",
+                                ix + 1,
+                                line + 1,
+                                file,
+                                e
+                            ),
+                        )
+                    })?;
+                    q1[k] = z.round().min(max_qual as f64) as u8;
+                }
+                calp[q] = q1;
+            }
+        }
+        line += 1;
+        buf.clear();
+    }
+    Ok(cal)
 }
 
 pub fn handle_cli() -> io::Result<(Hts, Config)> {
-   let m = Command::new("baldur")
+    let m = Command::new("baldur")
       .version(crate_version!())
       .author("Simon Heath")
       .about("Call sequence variants from mitochondrial ONT data")
@@ -478,12 +513,19 @@ pub fn handle_cli() -> io::Result<(Hts, Config)> {
             .long("no-call")
             .help("Do not call variants"),
       )
-      .arg(
+        .arg(
          Arg::new("view")
             .short('V')
             .long("view")
             .help("Generate pileup view"),
       )
+        .arg(
+          Arg::new("output_deletions")
+              .short('D')
+              .long("output-deletions")
+              .help("Output large deletions"),
+
+       )
       .arg(
          Arg::new("output_qual_calib")
             .hide(true)
@@ -512,122 +554,136 @@ pub fn handle_cli() -> io::Result<(Hts, Config)> {
       )
       .get_matches();
 
-   super::log_utils::init_log(&m);
+    super::log_utils::init_log(&m);
 
-   let mapq_threshold: u8 = m.value_of_t("mapq_threshold").unwrap();
-   let max_qual: u8 = m.value_of_t("max_qual").map(|x: u8| x.min((N_QUAL - 1) as u8)).unwrap();
-   let max_indel_qual: u8 = m.value_of_t("max_indel_qual").map(|x: u8| x.min(max_qual)).unwrap();
-   let qual_threshold: u8 = m.value_of_t("qual_threshold").map(|x: u8| x.min(max_qual)).unwrap();
-   let qual_table = setup_qual_model();
+    let mapq_threshold: u8 = m.value_of_t("mapq_threshold").unwrap();
+    let max_qual: u8 = m
+        .value_of_t("max_qual")
+        .map(|x: u8| x.min((N_QUAL - 1) as u8))
+        .unwrap();
+    let max_indel_qual: u8 = m
+        .value_of_t("max_indel_qual")
+        .map(|x: u8| x.min(max_qual))
+        .unwrap();
+    let qual_threshold: u8 = m
+        .value_of_t("qual_threshold")
+        .map(|x: u8| x.min(max_qual))
+        .unwrap();
+    let qual_table = setup_qual_model();
 
-   let homopolymer_limit: u8 = m.value_of_t("homopolymer_limit").unwrap();
-   let adjust: usize = m.value_of_t("adjust").unwrap();
-   let small_deletion_limit: usize = m.value_of_t("small_deletion_limit").unwrap();
-   let paired_end = m.is_present("paired_end");
-   let no_call = m.is_present("no_call");
-   let view = m.is_present("view");
+    let homopolymer_limit: u8 = m.value_of_t("homopolymer_limit").unwrap();
+    let adjust: usize = m.value_of_t("adjust").unwrap();
+    let small_deletion_limit: usize = m.value_of_t("small_deletion_limit").unwrap();
+    let paired_end = m.is_present("paired_end");
+    let no_call = m.is_present("no_call");
+    let view = m.is_present("view");
+    let output_deletions = m.is_present("output_deletions");
+    let output_qual_calib = m.is_present("output_qual_calib");
 
-   let output_qual_calib = m.is_present("output_qual_calib");
+    let sample = m.value_of("sample").map(Box::from);
 
-   let sample = m.value_of("sample").map(Box::from);
+    let output_prefix = m.value_of("output_prefix").map(Box::from).unwrap();
 
-   let output_prefix = m.value_of("output_prefix").map(Box::from).unwrap();
+    let input = m.value_of("input").unwrap_or("-");
 
-   let input = m.value_of("input").unwrap_or("-");
+    let hts = Hts::open(Some(input), "r")?;
 
-   let hts = Hts::open(Some(input), "r")?;
+    let hdr = if let Some(HtsHdr::Sam(hdr)) = hts.header() {
+        hdr
+    } else {
+        return Err(io_err(
+            "Wrong input file type (expected SAM/BAM/CRAM)".to_string(),
+        ));
+    };
 
-   let hdr = if let Some(HtsHdr::Sam(hdr)) = hts.header() { hdr } else {
-      return Err(io_err("Wrong input file type (expected SAM/BAM/CRAM)".to_string()));
-   };
+    debug!("Opened file {} for input", &input);
 
-   debug!("Opened file {} for input", &input);
+    let ref_file = m.value_of("reference").expect("Missing reference"); // Should be enforced by clap
 
-   let ref_file = m.value_of("reference").expect("Missing reference"); // Should be enforced by clap
-
-   let rdr = CompressIo::new().path(ref_file).bufreader()?;
-   debug!("Opened {} for input", ref_file);
-   let reference = Reference::from_reader(rdr, hdr)?;
-   if reference.n_contigs() == 0 {
-      return Err(io_err(format!(
-         "No contigs read in from reference file {}",
-         ref_file
-      )));
-   }
-   debug!(
+    let rdr = CompressIo::new().path(ref_file).bufreader()?;
+    debug!("Opened {} for input", ref_file);
+    let reference = Reference::from_reader(rdr, hdr)?;
+    if reference.n_contigs() == 0 {
+        return Err(io_err(format!(
+            "No contigs read in from reference file {}",
+            ref_file
+        )));
+    }
+    debug!(
         "Reference read in successfully with {} contigs",
         reference.n_contigs()
     );
 
-   let region = {
-      if let Some(reg_str) = m.value_of("region") {
-         let region = Region::from_str(reg_str, &reference)?;
-         if reference.contig(region.tid()).is_none() {
-            return Err(io_err(format!(
-               "Region {} not found in reference file {}",
-               reg_str, ref_file
-            )));
-         }
-         region
-      } else {
-         if reference.n_contigs() > 1 {
-            return Err(io_err(
-               "Region must be specified when reference file contains multiple contigs"
-                  .to_string(),
-            ));
-         }
-         let tid = reference.contigs().keys().next().expect("Empty reference");
-         Region::from_str(hdr.tid2name(*tid), &reference)?
-      }
-   };
+    let region = {
+        if let Some(reg_str) = m.value_of("region") {
+            let region = Region::from_str(reg_str, &reference)?;
+            if reference.contig(region.tid()).is_none() {
+                return Err(io_err(format!(
+                    "Region {} not found in reference file {}",
+                    reg_str, ref_file
+                )));
+            }
+            region
+        } else {
+            if reference.n_contigs() > 1 {
+                return Err(io_err(
+                    "Region must be specified when reference file contains multiple contigs"
+                        .to_string(),
+                ));
+            }
+            let tid = reference.contigs().keys().next().expect("Empty reference");
+            Region::from_str(hdr.tid2name(*tid), &reference)?
+        }
+    };
 
-   let blacklist = m.value_of("blacklist").map(|file| {
-      read_blacklist(file, hdr.tid2name(region.tid))
-         .expect("Could not read in blacklist from file")
-   });
+    let blacklist = m.value_of("blacklist").map(|file| {
+        read_blacklist(file, hdr.tid2name(region.tid))
+            .expect("Could not read in blacklist from file")
+    });
 
-   let qual_calib = m.value_of("qual_calib").map(|file| {
-      read_qual_calib(file, max_qual)
-         .expect("Could not read in bias list from file")
-   });
+    let qual_calib = m.value_of("qual_calib").map(|file| {
+        read_qual_calib(file, max_qual).expect("Could not read in bias list from file")
+    });
 
-   let rs = m.value_of("rs_list").map(|file| {
-      read_rslist(file, hdr.tid2name(region.tid))
-         .expect("Could not read in rs list from file")
-   });
+    let rs = m.value_of("rs_list").map(|file| {
+        read_rslist(file, hdr.tid2name(region.tid)).expect("Could not read in rs list from file")
+    });
 
-   let snv_thresholds: [f64; 2] = m.values_of_t::<f64>("snv_thresholds")
-      .map(|v| v.try_into().expect("Couldn't convert to array"))
-      .expect("Missing snv_thresholds");
+    let snv_thresholds: [f64; 2] = m
+        .values_of_t::<f64>("snv_thresholds")
+        .map(|v| v.try_into().expect("Couldn't convert to array"))
+        .expect("Missing snv_thresholds");
 
-   let indel_thresholds: [f64; 2] = m.values_of_t::<f64>("indel_thresholds")
-      .map(|v| v.try_into().expect("Couldn't convert to array"))
-      .expect("Missing indel_thresholds");
+    let indel_thresholds: [f64; 2] = m
+        .values_of_t::<f64>("indel_thresholds")
+        .map(|v| v.try_into().expect("Couldn't convert to array"))
+        .expect("Missing indel_thresholds");
 
-   Ok((
-      hts,
-      Config {
-         output_prefix,
-         sample,
-         region,
-         reference,
-         adjust,
-         small_deletion_limit,
-         blacklist,
-         qual_calib,
-         rs,
-         mapq_threshold,
-         qual_threshold,
-         snv_thresholds,
-         indel_thresholds,
-         homopolymer_limit,
-         qual_table,
-         max_qual,
-         max_indel_qual,
-         paired_end,
-         no_call,
-         output_qual_calib,
-         view,
-      },
-   ))
+    Ok((
+        hts,
+        Config {
+            output_prefix,
+            sample,
+            region,
+            reference,
+            adjust,
+            small_deletion_limit,
+            blacklist,
+            qual_calib,
+            rs,
+            mapq_threshold,
+            qual_threshold,
+            snv_thresholds,
+            indel_thresholds,
+            homopolymer_limit,
+            qual_table,
+            max_qual,
+            max_indel_qual,
+            paired_end,
+            no_call,
+            output_qual_calib,
+            view,
+            output_deletions,
+        },
+    ))
 }

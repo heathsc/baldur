@@ -93,28 +93,29 @@ Baldur has two behaviours that help the handling of alignments from such shifted
 
 Baldur has many command line options for controlling the operation of the calling process.
 
-| Short                    | Long                 | Description                                                 | Default        |
-|--------------------------|----------------------|-------------------------------------------------------------|----------------|
-| q                        | mapq-threshold       | MAPQ threshold                                              | 0              |
-| Q                        | qual-threshold       | Minimum base quality                                        | 0              |
-| M                        | max-qual             | Quality values for bases are capped at this value           | 30             |
-| I                        | max-indel-qual       | Quality values for indels are capped at this value          | 20             |
-| P                        | homopolymer-limit    | Minimum size of homopolymer runs flagged as problematic     | 4              |
-|                          | snv-thresholds       | Hard and soft limits for SNV reporting                      | 0.0005, 0.0025 |
-|                          | indel-thresholds     | Hard and soft limits for indel reporting                    | 0.025, 0.1     |
-|                          | small-deletion-limit | Maximum size for a small (explicit) deletion                | 64             |
+| Short                    | Long                 | Description                                             | Default        |
+|--------------------------|----------------------|---------------------------------------------------------|----------------|
+| q                        | mapq-threshold       | MAPQ threshold                                          | 0              |
+| Q                        | qual-threshold       | Minimum base quality                                    | 0              |
+| M                        | max-qual             | Quality values for bases are capped at this value       | 30             |
+| I                        | max-indel-qual       | Quality values for indels are capped at this value      | 20             |
+| P                        | homopolymer-limit    | Minimum size of homopolymer runs flagged as problematic | 4              |
+|                          | snv-thresholds       | Hard and soft limits for SNV reporting                  | 0.0005, 0.0025 |
+|                          | indel-thresholds     | Hard and soft limits for indel reporting                | 0.025, 0.1     |
+|                          | small-deletion-limit | Maximum size for a small (explicit) deletion            | 64             |
 |||||
-| a                        | adjust               | Adjustment to genomic position of alignments                | 0              |
-| r                        | region               | Genomic region to consider                                  |                |
+| a                        | adjust               | Adjustment to genomic position of alignments            | 0              |
+| r                        | region               | Genomic region to consider                              |                |
 |||||
-| o                        | output-prefix        | Prefix for output files                                     | baldur         |
-| n                        | sample               | Sample name (in VCF file)                                   | SAMPLE         |
-| T                        | reference            | Reference FASTA file (**REQUIRED**)                         |                |
-| l                        | loglevel             | Set log level (none, error, warn, info, debug, trace)       | info           |
-| <a name="blacklist"></a> | blacklist            | BED file with list of blacklisted sites                     |                |
-|                          | rs-list              | BED file with dbSNP rs identifiers                          |                |
-|                          | view          | Generate pileup view file|                |
-|                          | no-call              | Do not perform variant calling                              |                |
+| o                        | output-prefix        | Prefix for output files                                 | baldur         |
+| n                        | sample               | Sample name (in VCF file)                               | SAMPLE         |
+| T                        | reference            | Reference FASTA file (**REQUIRED**)                     |                |
+| l                        | loglevel             | Set log level (none, error, warn, info, debug, trace)   | info           |
+| <a name="blacklist"></a> | blacklist            | BED file with list of blacklisted sites                 |                |
+|                          | rs-list              | BED file with dbSNP rs identifiers                      |                |
+|                          | view                 | Generate pileup view file                               |                |
+| D                        | output-deletions     | Generate deletion report file                           |                |
+|                          | no-call              | Do not perform variant calling                          |                |
 
 ## <a name="overview"></a>Overview of workflow
 
@@ -129,6 +130,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.2.0 Add output-deletions option to report large deletions 
 - 1.1.10 Switch to r_htslib 0.13.0
 - 1.1.9 Switch to r_htslib 0.9.1
 - 1.1.8 Switch to r_htslib 0.5
