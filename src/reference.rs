@@ -1,11 +1,5 @@
-use std::{
-    collections::HashMap,
-    io::{self, BufRead},
-    rc::Rc,
-};
-
-use super::io_err;
 use r_htslib::SamHeader;
+use std::{collections::HashMap, io::BufRead, rc::Rc};
 
 const BASE_TRANS: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -18,7 +12,7 @@ const BASE_TRANS: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-#[derive(Copy, Clone,  Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct RefPos {
     base: u8,
     hpoly: u8,
@@ -29,11 +23,17 @@ impl RefPos {
     pub fn new(base: u8) -> Self {
         assert!(base <= 4);
         Self {
-            base, hpoly: 0, dinuc: 0
+            base,
+            hpoly: 0,
+            dinuc: 0,
         }
     }
-    pub fn base(&self) -> u8 { self.base }
-    pub fn hpoly(&self) -> u8 { self.hpoly }
+    pub fn base(&self) -> u8 {
+        self.base
+    }
+    pub fn hpoly(&self) -> u8 {
+        self.hpoly
+    }
 }
 
 pub struct Contig {
@@ -51,7 +51,9 @@ impl Contig {
         self.seq.len()
     }
 
-    pub fn seq(&self) -> &[RefPos] { &self.seq }
+    pub fn seq(&self) -> &[RefPos] {
+        &self.seq
+    }
 
     pub fn name(&self) -> &str {
         &self.name
@@ -74,10 +76,7 @@ impl<R: BufRead> FastaReader<R> {
         }
     }
 
-    fn next_record(
-        &mut self,
-        hdr: &SamHeader,
-    ) -> io::Result<Option<Contig>> {
+    fn next_record(&mut self, hdr: &SamHeader) -> anyhow::Result<Option<Contig>> {
         if self.buffer.is_empty() && self.rdr.read_line(&mut self.buffer)? == 0 {
             return Ok(None);
         }
@@ -87,7 +86,7 @@ impl<R: BufRead> FastaReader<R> {
                 .buffer
                 .strip_prefix('>')
                 .map(|s| Rc::from(s.trim_end()))
-                .ok_or_else(|| io_err(format!("Expected '>' at start of line {}", self.line)))?;
+                .ok_or_else(|| anyhow!("Expected '>' at start of line {}", self.line))?;
             trace!("Found contig {}", name);
             let ctg = hdr.name2tid(&name as &str);
             trace!("SAM tid = {:?}", ctg);
@@ -112,7 +111,7 @@ impl<R: BufRead> FastaReader<R> {
                         if c > 0 {
                             seq.push(RefPos::new(c - 1))
                         } else {
-                            return Err(io_err(format!("Illegal base at line {}", self.line)));
+                            return Err(anyhow!("Illegal base at line {}", self.line));
                         }
                     }
                 }
@@ -170,7 +169,7 @@ fn add_homopolymer_info(seq: &mut [RefPos]) {
     for (i, ct) in hpoly_list.drain(..) {
         let ctm = (ct - 1).min(15);
         for (k, c) in seq[i..i + ct].iter_mut().enumerate() {
-            c.hpoly =  ((k.min(15) << 4) | ctm) as u8;
+            c.hpoly = ((k.min(15) << 4) | ctm) as u8;
         }
     }
 }
@@ -182,8 +181,11 @@ fn add_dinuc_repeat_info(seq: &mut [RefPos]) {
     }
     let mut state: Option<State> = None;
     let mut dinuc_list = Vec::with_capacity(128);
-    for (i, c) in seq.chunks_exact(2)
-       .map(|v| [v[0].base, v[1].base]).enumerate() {
+    for (i, c) in seq
+        .chunks_exact(2)
+        .map(|v| [v[0].base, v[1].base])
+        .enumerate()
+    {
         state = match state {
             Some(s) => {
                 if c == s.dinuc {
@@ -195,21 +197,20 @@ fn add_dinuc_repeat_info(seq: &mut [RefPos]) {
                     if s.count >= 2 {
                         dinuc_list.push(((i - s.count) << 1, s.count))
                     }
-                    if c[0] == c[1] { None }
-                    else {
-                        Some(State {
-                            dinuc: c,
-                            count: 1,
-                        })
+                    if c[0] == c[1] {
+                        None
+                    } else {
+                        Some(State { dinuc: c, count: 1 })
                     }
                 }
             }
-            None => if c[0] == c[1] { None } else {
-                Some(State {
-                    dinuc: c,
-                    count: 1,
-                })
-            },
+            None => {
+                if c[0] == c[1] {
+                    None
+                } else {
+                    Some(State { dinuc: c, count: 1 })
+                }
+            }
         }
     }
     for (i, ct) in dinuc_list.drain(..) {
@@ -227,10 +228,7 @@ pub struct Reference {
 }
 
 impl Reference {
-    pub fn from_reader<R: BufRead>(
-        rdr: R,
-        hdr: &SamHeader,
-    ) -> io::Result<Self> {
+    pub fn from_reader<R: BufRead>(rdr: R, hdr: &SamHeader) -> anyhow::Result<Self> {
         let mut contigs = HashMap::new();
         let mut name2tid = HashMap::new();
         let mut fasta_rdr = FastaReader::new(rdr);

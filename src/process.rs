@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs::File,
-    io::{self, BufWriter, Write},
+    io::{BufWriter, Write},
 };
 
 use log::Level::Trace;
@@ -31,7 +31,7 @@ pub(crate) struct ProcWork<'a> {
     pub(crate) dels: Option<Deletions>,
 }
 
-fn output_calibration_data(cfg: &Config, pw: &ProcWork) -> io::Result<()> {
+fn output_calibration_data(cfg: &Config, pw: &ProcWork) -> anyhow::Result<()> {
     if cfg.output_qual_calib() {
         let calc_q = |q: &[usize]| {
             let p = (q[1] + 1) as f64 / ((q[0] + q[1] + 2) as f64);
@@ -73,7 +73,7 @@ fn output_calibration_data(cfg: &Config, pw: &ProcWork) -> io::Result<()> {
     Ok(())
 }
 
-pub fn process_data(mut hts_file: Hts, cfg: Config) -> io::Result<()> {
+pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     let reg = cfg.region();
     let ref_seq = cfg.reference().contig(reg.tid()).unwrap().seq();
     let dels = if cfg.output_deletions() {

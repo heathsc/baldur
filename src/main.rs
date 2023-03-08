@@ -1,31 +1,27 @@
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate anyhow;
 
-use std::io;
-
-mod cli;
-mod fisher;
-mod log_utils;
-mod process;
-mod reference;
-mod model;
-mod mann_whitney;
-mod vcf;
-mod depth;
-mod context;
-mod detailed_align;
-mod alleles;
 mod align_store;
-mod read;
-mod stat_funcs;
-mod freq;
+mod alleles;
+mod cli;
+mod context;
 mod deletions;
+mod depth;
+mod detailed_align;
+mod fisher;
+mod freq;
+mod log_utils;
+mod mann_whitney;
+mod model;
+mod process;
+mod read;
+mod reference;
+mod stat_funcs;
+mod vcf;
 
-pub fn io_err(s: String) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, s)
-}
-
-fn main() -> io::Result<()> {
+fn main() -> anyhow::Result<()> {
     let (infile, cfg) = cli::handle_cli()?;
     process::process_data(infile, cfg)
 }

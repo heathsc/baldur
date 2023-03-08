@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{self, BufWriter, Write},
+    io::{BufWriter, Write},
 };
 
 use r_htslib::*;
@@ -20,7 +20,7 @@ fn handle_read<W: Write>(
     cfg: &Config,
     proc_work: &mut ProcWork<'_>,
     wrt: Option<&mut W>,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let reg = cfg.region();
     let qt = cfg.qual_threshold();
     let max_qual = cfg.max_qual();
@@ -286,7 +286,7 @@ fn handle_read<W: Write>(
     Ok(())
 }
 
-pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> io::Result<()> {
+pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> anyhow::Result<()> {
     let reg = cfg.region();
 
     let mut wrt = if cfg.view() {

@@ -130,6 +130,7 @@ Baldur has many command line options for controlling the operation of the callin
 
 ## <a name="changes"></a>Changes
 
+- 1.2.1 Switch to clap 4.1 and use anyhow crate for error reporting
 - 1.2.0 Add output-deletions option to report large deletions 
 - 1.1.10 Switch to r_htslib 0.13.0
 - 1.1.9 Switch to r_htslib 0.9.1
