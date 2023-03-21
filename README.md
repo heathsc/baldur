@@ -39,7 +39,7 @@ Note that if you have rust already installed you should update it
 using ``rustup update`` before trying to compile baldur.
 
 You will also need to have [htslib](https://github.com/samtools/htslib) installed in a place 
-where the rust compiler can find it.  Note that *baldur* has been tested with versions of htslib from 1.12 to 1.15, but other recent versions should also work.
+where the rust compiler can find it.  Note that *baldur* has been tested with versions of htslib from 1.14 to 1.16, but more recent versions should also work.
 
 Clone the repository and then from the baldur directory
 use cargo to compile the application:
