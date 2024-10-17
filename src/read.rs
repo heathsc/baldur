@@ -20,6 +20,7 @@ fn handle_read<W: Write>(
     cfg: &Config,
     proc_work: &mut ProcWork<'_>,
     wrt: Option<&mut W>,
+    wrt_rej: Option<&mut W>,
 ) -> anyhow::Result<()> {
     let reg = cfg.region();
     let qt = cfg.qual_threshold();
@@ -282,6 +283,8 @@ fn handle_read<W: Write>(
                 }
             }
         }
+    } else if let Some(w) = wrt_rej {
+        writeln!(w, "{}", blst[0].qname().expect("Missing query name"))?;
     }
     Ok(())
 }
@@ -296,6 +299,13 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
         None
     };
 
+    let mut wrt_rej = if cfg.rejected() {
+        let view_output = format!("{}_rejected.txt", cfg.output_prefix());
+        Some(BufWriter::new(File::create(&view_output)?))
+    } else {
+        None
+    };
+    
     let mut blst = Vec::new();
     for _ in 0..MAX_SPLIT {
         blst.push(BamRec::new()?)
@@ -308,7 +318,7 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
             if idx > 0 {
                 if !b.qnames_eq(&blst[0])? {
                     if idx <= MAX_SPLIT {
-                        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
+                        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut(), wrt_rej.as_mut())?
                     }
                     b.swap(&mut blst[0]);
                     idx = 1;
@@ -327,7 +337,7 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
 
     // Process remaining reads (if any)
     if idx > 0 && idx <= MAX_SPLIT {
-        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut())?
+        handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut(), wrt_rej.as_mut())?
     }
     Ok(())
 }

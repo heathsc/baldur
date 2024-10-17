@@ -125,6 +125,7 @@ pub struct Config {
     homopolymer_limit: u8,
     paired_end: bool,
     no_call: bool,
+    rejected: bool,
     output_qual_calib: bool,
     view: bool,
     output_deletions: bool,
@@ -171,6 +172,10 @@ impl Config {
         self.no_call
     }
 
+    pub fn rejected(&self) -> bool {
+        self.rejected
+    }
+    
     pub fn view(&self) -> bool {
         self.view
     }
@@ -509,6 +514,12 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
                 .help("Generate pileup view"),
         )
         .arg(
+            Arg::new("rejected")
+                .long("rejected")
+                .action(ArgAction::SetTrue)
+                .help("Write out list of rejected read IDs"),
+        )
+        .arg(
             Arg::new("output_deletions")
                 .short('D')
                 .action(ArgAction::SetTrue)
@@ -561,6 +572,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
     let small_deletion_limit = *m.try_get_one::<usize>("small_deletion_limit")?.unwrap();
     let paired_end = m.get_flag("paired_end");
     let no_call = m.get_flag("no_call");
+    let rejected = m.get_flag("rejected");
     let view = m.get_flag("view");
     let output_deletions = m.get_flag("output_deletions");
     let output_qual_calib = m.get_flag("output_qual_calib");
@@ -681,6 +693,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
             max_indel_qual,
             paired_end,
             no_call,
+            rejected,
             output_qual_calib,
             view,
             output_deletions,
