@@ -243,9 +243,9 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
             }
 
             let mut z = 1.0;
-            for (a, b) in del_cts.drain(..) {
+            for ((a, b), (d, ct)) in del_cts.drain(..).zip(dels.iter()) {
                 if a > b {
-                    warn!("Odd missed read for del - {a} {b}")
+                    panic!("Odd missed read for del at x: {x} - {a} {b}  {d} {ct}");
                 } else if b > 0 {
                     let p = a as f64 / b as f64;
                     z *= 1.0 - p;

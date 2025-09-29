@@ -47,13 +47,45 @@ fn handle_read<W: Write>(
         });
     }
 
-    // Only process read if all mappings are to the same strand of the same contig and are well mapped
-    if blst.iter().all(|rec| {
+    let mut skip = false;
+    let chk_rec = |rec: &BamRec| {
         rec.tid() == Some(reg.tid())
             && rec.qual() >= cfg.mapq_threshold()
             && rec.pos().is_some()
             && (pe || (rec.flag() & BAM_FREVERSE) == fg)
-    }) {
+    };
+
+    // Only process read if all mappings are to the same strand of the same contig and are well mapped
+    // and split maps do not overlap on the reference
+    let mut last: Option<usize> = None;
+    for b in blst.iter() {
+        if !chk_rec(b) {
+            skip = true;
+            break
+        }
+        let x = b.pos().unwrap();
+        let y = b.rlen().unwrap() as usize + x;
+        
+        if let Some(p) = last {
+            if fg == 0 {
+                skip = x < p;
+                last = Some(y);
+            } else {
+                skip = p < y;
+                last = Some(x);
+            }
+            if skip {
+                eprintln!("Rejecting read - overlapping on reference");
+                break
+            }
+        } else {
+            last = Some(if fg == 0 { y } else { x } )
+        }
+        
+    }
+
+    
+    if !skip {
         let mut prev = None;
 
         let mut align_store = AlignStore::new(cfg);
@@ -61,9 +93,9 @@ fn handle_read<W: Write>(
         let mut ins_hash: HashMap<usize, (usize, u8)> = HashMap::new();
 
         let mut tot_mm = [0; 2];
-        
-        let mut start_end = (0, 0);
-        
+
+        let mut start_end = StartEnd::new();
+
         for b in blst.iter() {
             let reverse = (b.flag() & BAM_FREVERSE) != 0;
             let ref_start = b.pos().unwrap();
@@ -82,19 +114,22 @@ fn handle_read<W: Write>(
             if !(pe || reverse) {
                 if prev.is_some() {
                     if let Some(d) = proc_work.dels.as_mut() {
+                        if ref_start < align_store.pos() {
+                            eprintln!("OOOOK! {} {ref_start}", align_store.pos());
+                        }
                         d.add_del(align_store.pos(), ref_start, false, DelType::Split)
                     }
                     align_store.fill_to(b'S', QUAL_SKIP, ref_start);
                 } else {
-                    start_end.0 = ref_start;
+                    start_end.set_start(ref_start);
                     prev = Some(0)
                 }
             }
-            
+
             if reverse {
-                start_end.0 = ref_start;
+                start_end.set_start(ref_start)
             }
-            
+
             let seq_qual = b.get_seq_qual()?;
 
             // Evaluate context at each position in read
@@ -240,7 +275,7 @@ fn handle_read<W: Write>(
                     _ => (),
                 }
             }
-        
+
             if !pe && reverse {
                 if let Some(x) = prev {
                     if let Some(d) = proc_work.dels.as_mut() {
@@ -248,19 +283,21 @@ fn handle_read<W: Write>(
                     }
                     align_store.fill_to(b's', QUAL_SKIP, x)
                 } else {
-                    start_end.1 = align_store.pos();
+                    start_end.set_end(align_store.pos())
                 }
                 prev = Some(ref_start);
-            } 
+            }
             if !reverse {
-                start_end.1 = align_store.pos();
-            } 
+                start_end.set_end(align_store.pos())
+            }
         }
-        
-        if let Some(d) = proc_work.dels.as_mut() {
-            d.add_read_extent(start_end.0, start_end.1)
+
+        if let Some(d) = proc_work.dels.as_mut()
+            && let Some((s, e)) = start_end.get()
+        {
+            d.add_read_extent(s, e)
         }
-        
+
         if align_store.changed() {
             let depth = &mut proc_work.depth;
             depth.add_obs_vec(
@@ -294,6 +331,46 @@ fn handle_read<W: Write>(
         writeln!(w, "{}", blst[0].qname().expect("Missing query name"))?;
     }
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct StartEnd {
+    start: Option<usize>,
+    end: Option<usize>,
+}
+
+impl StartEnd {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn set_start(&mut self, x: usize) {
+        self.start = Some(x);
+        self._check()
+    }
+
+    fn set_end(&mut self, x: usize) {
+        self.end = Some(x);
+        self._check()
+    }
+
+    fn _check(&self) {
+        if let Some(s) = self.start
+            && let Some(e) = self.end
+        {
+            assert!(s < e, "Illegal start end coordinates");
+        }
+    }
+
+    fn get(&self) -> Option<(usize, usize)> {
+        if let Some(s) = self.start
+            && let Some(e) = self.end
+        {
+            Some((s, e))
+        } else {
+            None
+        }
+    }
 }
 
 pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> anyhow::Result<()> {

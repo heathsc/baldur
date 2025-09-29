@@ -47,9 +47,6 @@ impl fmt::Display for DepthCounts {
             s2
         };
         write!(f, "{}\t{}\t{}", s3, s2, s1)?;
-        // for x in cts.iter() {
-        //    write!(f, "\t{}\t{}", x[0], x[1])?;
-        //}
         Ok(())
     }
 }

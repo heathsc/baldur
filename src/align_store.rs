@@ -105,11 +105,9 @@ impl<'a> AlignStore<'a> {
     pub(crate) fn fill_to(&mut self, fill: u8, qual: u8, x: usize) {
         assert!(self.pos >= 0);
         let x = (x as isize) - self.adjust;
-        loop {
+        assert!(x >= self.pos, "Overlapping splits on reference");
+        while self.pos < x {
             let pos = self.pos % (self.target_size as isize);
-            if pos == x {
-                break;
-            }
             if self.in_region().is_some() {
                 let tp = &mut self.seq[(pos as usize) - self.start];
                 if *tp != b' ' {

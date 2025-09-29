@@ -89,18 +89,14 @@ impl Deletions {
                 dtype,
                 reversed,
             };
-            // eprintln!("Del:\t{del}");
-            let e = self.del_hash.entry(del).or_insert(0);
-            *e += 1;
+            let ct = self.del_hash.entry(del).or_insert(0);
+            *ct += 1;
         }
     }
 
     pub fn add_read_extent(&mut self, start: usize, end: usize) {
-        if end > start && end < 2 * self.target_size {
-            self.read_extents.push([start, end]);
-        } else {
-            warn!("Very short read! {start} {end}");
-        }
+        assert!(end > start);
+        self.read_extents.push([start, end]);
     }
 
     pub fn iter<'a>(&'a self) -> hash_map::Iter<'a, Deletion, usize> {
