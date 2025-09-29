@@ -3,8 +3,8 @@ use std::cmp;
 use libc::c_double;
 
 #[link(name = "m")]
-extern "C" {
-    fn lgamma(x: c_double) -> c_double;
+unsafe extern "C" {
+    unsafe fn lgamma(x: c_double) -> c_double;
 }
 
 const LFACT_STORE_SIZE: usize = 256;
@@ -52,7 +52,7 @@ impl FisherTest {
         let row = [(ftab[0] + ftab[1]) as f64, (ftab[2] + ftab[3]) as f64];
         let col = [(ftab[0] + ftab[2]) as f64, (ftab[1] + ftab[3]) as f64];
         let n = row[0] + row[1];
-        let mut c: Vec<usize> = ftab.iter().map(|x| *x).collect();
+        let mut c = ftab.to_vec();
         if n < 1.0 {
             1.0
         } else {

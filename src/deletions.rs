@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     fmt::{self, Formatter},
 };
 
@@ -30,6 +30,7 @@ pub struct Deletion {
     start: usize,
     end: usize,
     size: isize,
+    reversed: bool,
     dtype: DelType,
 }
 
@@ -40,35 +41,28 @@ impl fmt::Display for Deletion {
             "{}\t{}\t{}\t{}\t{}",
             self.start,
             self.end,
-            if self.size.is_negative() { '-' } else { '+' },
+            if self.reversed { '-' } else { '+' },
             self.size,
             self.dtype,
         )
     }
 }
-/*
+
 impl Deletion {
-    pub fn size(&self) -> usize {
-        self.size.abs() as usize
+    pub fn start_end_pos(&self) -> (usize, usize) {
+        // Set coordinates to forward strand and add 10bp padding
+        if self.reversed {
+            (self.end, self.start)
+        } else {
+            (self.start, self.end)
+        }
     }
-
-    pub fn reversed(&self) -> bool {
-        self.size.is_negative()
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
-    }
-}*/
-
+}
 /// We store deletions at least as large as min_size in a hash table so we can get summaries of
 /// large deletions across all reads
 pub struct Deletions {
     del_hash: HashMap<Deletion, usize>,
+    read_extents: Vec<[usize; 2]>,
     min_size: isize,
     target_size: usize,
 }
@@ -77,41 +71,51 @@ impl Deletions {
     pub fn new(target_size: usize, min_size: usize) -> Self {
         Self {
             del_hash: HashMap::new(),
+            read_extents: Vec::new(),
             min_size: min_size as isize,
             target_size,
         }
     }
 
     pub fn add_del(&mut self, start: usize, end: usize, reversed: bool, dtype: DelType) {
+        let size = end as isize - start as isize;
         let start = start % self.target_size;
         let end = end % self.target_size;
-        let size = if reversed {
-            let mut s = (start as isize + 1) - (end as isize);
-            if s < 1 {
-                s += self.target_size as isize
-            }
-            -s
-        } else {
-            let mut s = (end as isize + 1) - (start as isize);
-            if s < 1 {
-                s += self.target_size as isize
-            }
-            s
-        };
-        assert!(size.abs() > 0);
         if size.abs() >= self.min_size {
             let del = Deletion {
                 start,
                 end,
                 size,
                 dtype,
+                reversed,
             };
+            // eprintln!("Del:\t{del}");
             let e = self.del_hash.entry(del).or_insert(0);
             *e += 1;
         }
     }
 
-    pub fn iter(&self) -> hash_map::Iter<Deletion, usize> {
+    pub fn add_read_extent(&mut self, start: usize, end: usize) {
+        if end > start && end < 2 * self.target_size {
+            self.read_extents.push([start, end]);
+        } else {
+            warn!("Very short read! {start} {end}");
+        }
+    }
+
+    pub fn iter<'a>(&'a self) -> hash_map::Iter<'a, Deletion, usize> {
         self.del_hash.iter()
+    }
+
+    pub fn read_extents(&self) -> &[[usize; 2]] {
+        &self.read_extents
+    }
+
+    pub fn target_size(&self) -> usize {
+        self.target_size
+    }
+
+    pub fn len(&self) -> usize {
+        self.del_hash.len()
     }
 }

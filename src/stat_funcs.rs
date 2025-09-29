@@ -1,5 +1,5 @@
 #[link(name = "m")]
-extern "C" {
+unsafe extern "C" {
    #[link_name = "erfc"]
    fn libm_erfc(x: f64) -> f64;
    #[link_name = "erf"]

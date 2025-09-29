@@ -4,14 +4,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{command, value_parser, Arg, ArgAction};
+use clap::{Arg, ArgAction, command, value_parser};
 use compress_io::compress::CompressIo;
 use r_htslib::{Hts, HtsHdr};
 use regex::{Match, Regex};
 
 use crate::{
     log_utils::LogLevel,
-    model::{setup_qual_model, N_QUAL},
+    model::{N_QUAL, setup_qual_model},
     reference::Reference,
 };
 
@@ -112,6 +112,7 @@ pub struct Config {
     sample: Option<Box<str>>,
     adjust: usize,
     small_deletion_limit: usize,
+    large_deletion_limit: usize,
     blacklist: Option<HashSet<usize>>,
     qual_calib: Option<[[[u8; 2]; N_QUAL]; N_QUAL]>,
     rs: Option<HashMap<usize, Box<str>>>,
@@ -175,7 +176,7 @@ impl Config {
     pub fn rejected(&self) -> bool {
         self.rejected
     }
-    
+
     pub fn view(&self) -> bool {
         self.view
     }
@@ -207,6 +208,10 @@ impl Config {
     pub fn small_deletion_limit(&self) -> usize {
         self.small_deletion_limit
     }
+    
+    pub fn large_deletion_limit(&self) -> usize {
+        self.large_deletion_limit
+    }
 
     pub fn reference(&self) -> &Reference {
         &self.reference
@@ -221,7 +226,7 @@ impl Config {
 
     pub fn qual_calib(&self, ctxt: usize, q: u8) -> Option<&[u8; 2]> {
         self.qual_calib.as_ref().map(|v| {
-            &v[ctxt as usize][if q != 61 {
+            &v[ctxt][if q != 61 {
                 q.min(self.max_qual) as usize
             } else {
                 61
@@ -254,12 +259,12 @@ fn read_blacklist<S: AsRef<Path>>(file: S, ctg: &str) -> anyhow::Result<HashSet<
             cts.0 += 1;
             let i = fields[1].parse::<usize>();
             let j = fields[2].parse::<usize>();
-            if let (Ok(i1), Ok(j1)) = (i, j) {
-                if j1 > i1 {
-                    cts.1 += j1 - i1;
-                    for ix in i1..j1 {
-                        hs.insert(ix + 1);
-                    }
+            if let (Ok(i1), Ok(j1)) = (i, j)
+                && j1 > i1
+            {
+                cts.1 += j1 - i1;
+                for ix in i1..j1 {
+                    hs.insert(ix + 1);
                 }
             }
         }
@@ -284,11 +289,11 @@ fn read_rslist<S: AsRef<Path>>(file: S, ctg: &str) -> anyhow::Result<HashMap<usi
         if fields[0] == ctg {
             let i = fields[1].parse::<usize>();
             let j = fields[2].parse::<usize>();
-            if let (Ok(i1), Ok(j1)) = (i, j) {
-                if j1 == i1 + 1 {
-                    hs.insert(j1, Box::from(fields[3]));
-                    cts += 1;
-                }
+            if let (Ok(i1), Ok(j1)) = (i, j)
+                && j1 == i1 + 1
+            {
+                hs.insert(j1, Box::from(fields[3]));
+                cts += 1;
             }
         }
         buf.clear();
@@ -391,7 +396,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
                 .num_args(2)
                 .value_parser(value_parser!(f64))
                 .value_delimiter(',')
-                .default_values(&["0.0005", "0.0025"])
+                .default_values(["0.0005", "0.0025"])
                 .value_name("FREQ1, FREQ2")
                 .help("SNV's with frequency below FREQ1 (hard limit) are not reported, and below FREQ2 (soft limit) have a low_freq warning"),
         )
@@ -401,7 +406,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
                 .num_args(2)
                 .value_delimiter(',')
                 .value_parser(value_parser!(f64))
-                .default_values(&["0.025", "0.1"])
+                .default_values(["0.025", "0.1"])
                 .value_name("FREQ1, FREQ2")
                 .help("Indels with freq below FREQ1 (hard limit) are not reported, and below FREQ2 (soft limit) have a low_freq warning"),
         )
@@ -438,6 +443,14 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
                 .value_name("SIZE")
                 .default_value("64")
                 .help("Maximum size for a small (explicit) deletion"),
+        )
+        .arg(
+            Arg::new("large_deletion_limit")
+                .long("large-deletion-limit")
+                .value_parser(value_parser!(usize))
+                .value_name("SIZE")
+                .default_value("25")
+                .help("Minimum size for a large deletion"),
         )
         .next_help_heading("Operation")
         .arg(
@@ -570,6 +583,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
     let homopolymer_limit = *m.try_get_one::<u8>("homopolymer_limit")?.unwrap();
     let adjust = *m.try_get_one::<usize>("adjust")?.unwrap();
     let small_deletion_limit = *m.try_get_one::<usize>("small_deletion_limit")?.unwrap();
+    let large_deletion_limit = *m.try_get_one::<usize>("large_deletion_limit")?.unwrap();
     let paired_end = m.get_flag("paired_end");
     let no_call = m.get_flag("no_call");
     let rejected = m.get_flag("rejected");
@@ -680,6 +694,7 @@ pub fn handle_cli() -> anyhow::Result<(Hts, Config)> {
             reference,
             adjust,
             small_deletion_limit,
+            large_deletion_limit,
             blacklist,
             qual_calib,
             rs,

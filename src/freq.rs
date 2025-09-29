@@ -238,7 +238,7 @@ fn recalc_allele_counts(pw: &mut ProcWork, large_del: &[LargeDeletion]) {
 
 pub(crate) fn process_large_deletions(
     pw: &mut ProcWork,
-    res: &mut Vec<VcfRes>,
+    res: &mut [VcfRes],
     vc: &VcfCalc,
 ) -> Vec<LargeDeletion> {
     debug!("Checking for large deletions");

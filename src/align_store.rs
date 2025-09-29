@@ -81,7 +81,7 @@ impl<'a> AlignStore<'a> {
                     }
                     if ctxt.context3().is_some() && self.cfg.rs(x).is_none() {
                         let q = q as usize;
-                        let ct = ctxt.context3().unwrap() as usize;
+                        let ct = ctxt.context3().unwrap();
                         if !is_del(*base) {
                             pw.qual_hist[q][mm] += 1;
                             pw.ctxt_hist[ct][q][mm] += 1;

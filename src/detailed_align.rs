@@ -134,12 +134,15 @@ impl DetailedAlign {
       if qn > 0 { Some( (qsum / qn) as u8) } else { None }
    } */
 
-   pub(crate) fn extract_deletion_allele<'a>(&self, x: usize, y: usize, ref_len: usize, v: &mut AllDesc) -> Option<u8> {
+   pub(crate) fn extract_deletion_allele(&self, x: usize, y: usize, ref_len: usize, v: &mut AllDesc) -> Option<u8> {
       assert!(x < ref_len && y < ref_len);
 
       let x = if x < self.start { x + ref_len } else { x };
       let y = if y < x { y + ref_len } else { y };
-      assert!(x <= y);
+      if x > y {
+          warn!("Expected x <= y ({x} {y})");
+          return None
+      }
       let end_x = self.start + self.seq_qual.len();
       v.clear();
       let mut qsum: usize = 0;
@@ -202,11 +205,11 @@ impl DetailedAlign {
       if seq[0] == b' ' {
          // First base if unobserved.  Find first observed base
          if let Some((x, _)) = seq.iter().enumerate()
-            .find(|(_, &c)| c != b' ') {
+            .find(|(_, c)| **c != b' ') {
             // Find first base from end that is observed.  We can safely call unwrap()
             // because we know at least 1 base is observed
             let y = seq.iter().enumerate().rev()
-               .find(|(_, &c)| c != b' ').map(|(i, _)| i)
+               .find(|(_, c)| **c != b' ').map(|(i, _)| i)
                .unwrap();
             // Clone and make boxed slice of selected section
             Some(Self::from_vec_slice(&seq[x..=y],&qual[x..=y], ins_hash, x, hash, id))
@@ -215,11 +218,11 @@ impl DetailedAlign {
             None
          }
       } else if let Some((y, _)) = seq.iter().enumerate()
-         .find(|(_, &c)| c == b' ') {
+         .find(|(_, c)| **c == b' ') {
          // First base is observed, and y is index of first unobserved base
          // Find next observed base (if this exists)
          if let Some(x) = seq[y + 1..].iter().enumerate()
-            .find(|(_, &c)| c != b' ')
+            .find(|(_, c)| **c != b' ')
             .map(|(i, _)| i + y + 1) {
             // Copy observed section
             let l = seq[x..].len() + y;

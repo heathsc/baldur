@@ -123,7 +123,7 @@ impl<'a, 'b, 'c> VcfCalc<'a, 'b, 'c> {
       for ar in mr.alleles.iter_mut() { ar.flag = false }
 
       let alleles: Vec<_> = alleles.iter().enumerate()
-         .filter(|(i, &k)| *i == 0 || mr.alleles[k].freq >= match indel_flags[k] {
+         .filter(|(i, k)| *i == 0 || mr.alleles[**k].freq >= match indel_flags[**k] {
             true => indel_lim,
             false => snv_lim,
          })
