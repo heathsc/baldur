@@ -13,24 +13,8 @@ use crate::{
 const QUAL_SKIP: u8 = 20;
 const MAX_SPLIT: usize = 8;
 
-/// Process the BAM record(s) coming from a single read
-fn handle_read<W: Write>(
-    blst: &mut [BamRec],
-    cfg: &Config,
-    proc_work: &mut ProcWork<'_>,
-    wrt: Option<&mut W>,
-    wrt_rej: Option<&mut W>,
-) -> anyhow::Result<()> {
-    let reg = cfg.region();
-    let qt = cfg.qual_threshold();
-    let max_qual = cfg.max_qual();
-    let max_indel_qual = cfg.max_indel_qual();
-    let pe = cfg.paired_end();
-
+fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u8) -> bool {
     let fg = blst[0].flag() & BAM_FREVERSE;
-    let calib_reqd = cfg.have_qual_calib() || cfg.output_qual_calib();
-
-    // Sort BAM records by starting position within read
     if !pe {
         blst.sort_unstable_by_key(|b| {
             let cigar = b.cigar().expect("No Cigar!");
@@ -46,12 +30,13 @@ fn handle_read<W: Write>(
             }
         });
     }
-
+    
     let mut skip = false;
     let chk_rec = |rec: &BamRec| {
-        rec.tid() == Some(reg.tid())
-            && rec.qual() >= cfg.mapq_threshold()
+        rec.tid() == Some(reg_tid)
+            && rec.qual() >= mapq_thresh
             && rec.pos().is_some()
+            && rec.cigar().is_some()
             && (pe || (rec.flag() & BAM_FREVERSE) == fg)
     };
 
@@ -61,11 +46,25 @@ fn handle_read<W: Write>(
     for b in blst.iter() {
         if !chk_rec(b) {
             skip = true;
-            break
+            break;
         }
+        
+        let cigar = b.cigar().unwrap();
+
+        // Check that cigar does not have an Ins that does not follow a match.  We do not
+        // handle this (odd!) combination, so if we find it we will just skip the read
+        if cigar
+            .windows(2)
+            .any(|v| v[1].op() == CigarOp::Ins && v[0].op() != CigarOp::Match)
+        {
+            warn!("Bad CIGAR: Ins not preceded by a Match,  Skipping read");
+            skip = true;
+            break;
+        }
+        
         let x = b.pos().unwrap();
         let y = b.rlen().unwrap() as usize + x;
-        
+
         if let Some(p) = last {
             if fg == 0 {
                 skip = x < p;
@@ -76,16 +75,33 @@ fn handle_read<W: Write>(
             }
             if skip {
                 eprintln!("Rejecting read - overlapping on reference");
-                break
+                break;
             }
         } else {
-            last = Some(if fg == 0 { y } else { x } )
+            last = Some(if fg == 0 { y } else { x })
         }
-        
     }
-
     
-    if !skip {
+    skip
+}
+
+/// Process the BAM record(s) coming from a single read
+fn handle_read<W: Write>(
+    blst: &mut [BamRec],
+    cfg: &Config,
+    proc_work: &mut ProcWork<'_>,
+    wrt: Option<&mut W>,
+    wrt_rej: Option<&mut W>,
+) -> anyhow::Result<()> {
+    let reg_tid = cfg.region().tid();
+    let qt = cfg.qual_threshold();
+    let max_qual = cfg.max_qual();
+    let max_indel_qual = cfg.max_indel_qual();
+    let pe = cfg.paired_end();
+
+    let calib_reqd = cfg.have_qual_calib() || cfg.output_qual_calib();
+
+    if !sort_and_filter(blst, pe, reg_tid, cfg.mapq_threshold()) {
         let mut prev = None;
 
         let mut align_store = AlignStore::new(cfg);
@@ -99,24 +115,11 @@ fn handle_read<W: Write>(
         for b in blst.iter() {
             let reverse = (b.flag() & BAM_FREVERSE) != 0;
             let ref_start = b.pos().unwrap();
-            let cigar = b.cigar().expect("No Cigar!");
-
-            // Check that cigar does not have an Ins that does not follow a match.  We do not
-            // handle this (odd!) combination, so if we find it we will just skip the read
-            if cigar
-                .windows(2)
-                .any(|v| v[1].op() == CigarOp::Ins && v[0].op() != CigarOp::Match)
-            {
-                warn!("Bad CIGAR: Ins not preceded by a Match,  Skipping read");
-                continue;
-            }
-
+            let cigar = b.cigar().unwrap();
+            
             if !(pe || reverse) {
                 if prev.is_some() {
                     if let Some(d) = proc_work.dels.as_mut() {
-                        if ref_start < align_store.pos() {
-                            eprintln!("OOOOK! {} {ref_start}", align_store.pos());
-                        }
                         d.add_del(align_store.pos(), ref_start, false, DelType::Split)
                     }
                     align_store.fill_to(b'S', QUAL_SKIP, ref_start);
@@ -264,9 +267,9 @@ fn handle_read<W: Write>(
                             let x = align_store.pos();
                             let y = x + l - 1;
                             if reverse {
-                                d.add_del(y, x, true, DelType::Del)
+                                d.add_del(y, x + 1, true, DelType::Del)
                             } else {
-                                d.add_del(x, y, false, DelType::Del)
+                                d.add_del(x, y + 1, false, DelType::Del)
                             }
                         }
                         align_store.add(&v, proc_work.ref_seq, proc_work);

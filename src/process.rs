@@ -11,89 +11,23 @@ use r_htslib::*;
 use crate::{
     alleles::*,
     cli::Config,
-    context::*,
-    deletions::*,
+    deletions::DeletionWork,
     depth::*,
     fisher::FisherTest,
     freq::{estimate_single_base_freq, process_large_deletions},
     read::read_file,
-    reference::RefPos,
     vcf::{VcfCalc, VcfRes, write_vcf_header},
 };
 
-type Qhist = [[usize; 4]; 64];
+mod output_calib;
+mod proc_work;
 
-pub(crate) struct ProcWork<'a> {
-    pub(crate) ref_seq: &'a [RefPos],
-    pub(crate) depth: Depth,
-    pub(crate) qual_hist: Qhist,
-    pub(crate) ctxt_hist: [Qhist; N_CTXT],
-    pub(crate) dels: Option<Deletions>,
-}
-
-fn output_calibration_data(cfg: &Config, pw: &ProcWork) -> anyhow::Result<()> {
-    if cfg.output_qual_calib() {
-        let calc_q = |q: &[usize]| {
-            let p = (q[1] + 1) as f64 / ((q[0] + q[1] + 2) as f64);
-            -10.0 * p.log10()
-        };
-        let qual_cal_output = format!("{}_qcal.txt", cfg.output_prefix());
-        let mut wrt = BufWriter::new(File::create(&qual_cal_output)?);
-        write!(
-            wrt,
-            "Qual\tEmp_Qual\tEmp_Qual_Del\tMatch\tMismatch\tMatch_Del\tMismatch_Del"
-        )?;
-        for i in 0..N_CTXT {
-            write!(wrt, "\t{:#}\t\t\t\t\t", Ctxt5((i as u16) << 2))?;
-        }
-        writeln!(wrt)?;
-        for (q, qc) in pw.qual_hist.iter().enumerate() {
-            if qc[0] + qc[1] + qc[2] + qc[3] > 0 {
-                let empirical_q = calc_q(&qc[..2]);
-                let empirical_qd = calc_q(&qc[2..]);
-                write!(
-                    wrt,
-                    "{}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}",
-                    q, empirical_q, empirical_qd, qc[0], qc[1], qc[2], qc[3]
-                )?;
-                for cc in pw.ctxt_hist.iter() {
-                    let qc1 = &cc[q];
-                    let empirical_q = calc_q(&qc1[..2]);
-                    let empirical_qd = calc_q(&qc1[2..]);
-                    write!(
-                        wrt,
-                        "\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}",
-                        empirical_q, empirical_qd, qc1[0], qc1[1], qc1[2], qc1[3]
-                    )?;
-                }
-                writeln!(wrt)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-const EXTEND_DEL: usize = 30;
+pub use proc_work::ProcWork;
 
 pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
+    let mut pw = ProcWork::new(&cfg);
     let reg = cfg.region();
-    let ref_seq = cfg.reference().contig(reg.tid()).unwrap().seq();
-    let dels = if cfg.output_deletions() {
-        Some(Deletions::new(
-            cfg.region().ctg_size(),
-            cfg.large_deletion_limit(),
-        ))
-    } else {
-        None
-    };
-
-    let mut pw = ProcWork {
-        depth: Depth::new(reg.len(), !cfg.no_call()),
-        qual_hist: [[0; 4]; 64],
-        ctxt_hist: [[[0; 4]; 64]; N_CTXT],
-        ref_seq,
-        dels,
-    };
+    let ref_seq = pw.ref_seq;
 
     let threadpool = HtsThreadPool::new(1);
     if let Some(th) = threadpool.as_ref() {
@@ -106,7 +40,7 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     let hdr = hts_file.header().unwrap();
 
     // Output calibration data if requested
-    output_calibration_data(&cfg, &pw)?;
+    output_calib::output_calibration_data(&cfg, &pw)?;
 
     let sam_hdr = if let HtsHdr::Sam(h) = hdr {
         h
@@ -116,62 +50,13 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
 
     let depth_output = format!("{}_depth.txt", cfg.output_prefix());
     let mut wrt = BufWriter::new(File::create(&depth_output)?);
-    let mut vcf_wrt = if !cfg.no_call() {
-        Some(write_vcf_header(sam_hdr, &cfg)?)
-    } else {
-        None
-    };
 
-    let mut dels = if let Some(dels) = pw.dels.take() {
-        let view_output = format!("{}_del.txt", cfg.output_prefix());
-        let mut wrt = BufWriter::new(File::create(&view_output)?);
-        let re = dels.read_extents();
-
-        for (d, x) in dels.iter() {
-            writeln!(wrt, "{d}\t{x}")?;
+    let mut del_work = match pw.dels.take() {
+        Some(dels) => {
+            dels.write_deletions(cfg.output_prefix())?;
+            Some(DeletionWork::new(dels))
         }
-
-        let n_dels = dels.len();
-        let n_u64 = (n_dels + 63) >> 6;
-        let mut mask = vec![0u64; re.len() * n_u64];
-        let target_size = dels.target_size();
-
-        for (i, (d, _)) in dels.iter().enumerate() {
-            let (s, e) = d.start_end_pos();
-            let overlap_origin = e < s;
-            let start = s.saturating_sub(EXTEND_DEL);
-            let end = if overlap_origin {
-                e + target_size + EXTEND_DEL
-            } else {
-                e + EXTEND_DEL
-            };
-            let (j, mk) = (i >> 6, 1u64 << (i & 63));
-
-            for (x, m) in re.iter().zip(mask.chunks_mut(n_u64)) {
-                // Is del covered by read?
-                let tst = |a, b| a >= x[0] && b <= x[1];
-
-                if tst(start, end)
-                    || (!overlap_origin && tst(start + target_size, end + target_size))
-                {
-                    m[j] |= mk
-                }
-            }
-        }
-        let mut mask1 = Vec::new();
-        let mut reads = Vec::new();
-        if n_u64 > 0 {
-            for (r, m) in re.iter().zip(mask.chunks(n_u64)) {
-                if m.iter().any(|b| *b != 0) {
-                    mask1.extend_from_slice(m);
-                    reads.push(*r)
-                }
-            }
-        }
-        let del_cts: Vec<(usize, usize)> = Vec::with_capacity(n_dels);
-        Some((dels, mask1, reads, n_u64, del_cts))
-    } else {
-        None
+        None => None,
     };
 
     let ref_base = |x: usize| BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;
@@ -179,7 +64,6 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     // Print out depth records
     for (i, dep) in pw.depth.counts.iter().enumerate() {
         let x = i + reg.start();
-
         // Write out depth record
         write!(
             wrt,
@@ -190,75 +74,20 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
             dep
         )?;
 
-        if let Some((dels, mask, re, n_u64, del_cts)) = dels.as_mut() {
-            let mut msk = vec![0u64; *n_u64];
-            let mut msk1 = Vec::with_capacity(*n_u64);
-
-            let mut ct = 0;
-            let target_size = dels.target_size();
-
-            del_cts.clear();
-            for (i, (d, c)) in dels.iter().enumerate() {
-                let (start, end) = d.start_end_pos();
-                let z = if start <= end {
-                    (start..=end).contains(&x)
-                } else {
-                    x >= start || x <= end
-                };
-
-                if z {
-                    ct += *c;
-                    let (j, mk) = (i >> 6, 1u64 << (i & 63));
-                    msk[j] |= mk;
-                    del_cts.push((*c, 0))
-                } else {
-                    del_cts.push((0, 0))
-                }
-            }
-            let mut n = 0;
-            if  *n_u64 > 0 {
-                for (r, m) in re.iter().zip(mask.chunks(*n_u64)) {
-                    msk1.clear();
-                    for (m1, m2) in m.iter().zip(msk.iter()) {
-                        msk1.push(m1 & m2)
-                    }
-                    if msk1.iter().any(|x| *x != 0)
-                        && ((r[0]..=r[1]).contains(&x)
-                            || (r[0]..=r[1]).contains(&(x + target_size)))
-                    {
-                        for (j, m) in msk1.iter().enumerate() {
-                            let mut x = *m;
-                            let mut i = 0;
-                            while x != 0 {
-                                if (x & 1) == 1 {
-                                    del_cts[j * 64 + i].1 += 1;
-                                }
-                                i += 1;
-                                x >>= 1
-                            }
-                        }
-                        n += 1
-                    }
-                }
-            }
-
-            let mut z = 1.0;
-            for ((a, b), (d, ct)) in del_cts.drain(..).zip(dels.iter()) {
-                if a > b {
-                    panic!("Odd missed read for del at x: {x} - {a} {b}  {d} {ct}");
-                } else if b > 0 {
-                    let p = a as f64 / b as f64;
-                    z *= 1.0 - p;
-                }
-            }
-            let p = 1.0 - z;
-
-            writeln!(wrt, "\t{ct}\t{n}\t{}", p * 100.0)?;
+        if let Some(dw) = del_work.as_mut() {
+            let z = dw.get_del_prob(x);
+            writeln!(wrt, "\t{z}")?;
         } else {
             writeln!(wrt)?;
         }
     }
 
+    let mut vcf_wrt = if !cfg.no_call() {
+        Some(write_vcf_header(sam_hdr, &cfg)?)
+    } else {
+        None
+    };
+    
     let fisher_test = FisherTest::new();
     let mut vr_cache: Option<(&mut VcfRes, &DepthCounts)> = None;
 
