@@ -25,7 +25,7 @@ mod proc_work;
 pub use proc_work::ProcWork;
 
 pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
-    let mut pw = ProcWork::new(&cfg);
+    let mut pw = ProcWork::new(&cfg)?;
     let reg = cfg.region();
     let ref_seq = pw.ref_seq;
 
@@ -51,13 +51,10 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     let depth_output = format!("{}_depth.txt", cfg.output_prefix());
     let mut wrt = BufWriter::new(File::create(&depth_output)?);
 
-    let mut del_work = match pw.dels.take() {
-        Some(dels) => {
-            dels.write_deletions(cfg.output_prefix())?;
-            Some(DeletionWork::new(dels))
-        }
-        None => None,
-    };
+    let mut del_work = pw
+        .dels
+        .take()
+        .map(DeletionWork::new);
 
     let ref_base = |x: usize| BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;
 
@@ -75,7 +72,7 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
         )?;
 
         if let Some(dw) = del_work.as_mut() {
-            let z = dw.get_del_prob(x);
+            let z = dw.get_del_prob(x + 1);
             writeln!(wrt, "\t{z}")?;
         } else {
             writeln!(wrt)?;
@@ -87,7 +84,7 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     } else {
         None
     };
-    
+
     let fisher_test = FisherTest::new();
     let mut vr_cache: Option<(&mut VcfRes, &DepthCounts)> = None;
 

@@ -5,6 +5,7 @@ use std::{
 };
 
 use r_htslib::*;
+use compress_io::compress::CompressIo;
 
 use crate::{
     align_store::AlignStore, cli::Config, context::*, deletions::DelType, process::ProcWork,
@@ -30,7 +31,7 @@ fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u
             }
         });
     }
-    
+
     let mut skip = false;
     let chk_rec = |rec: &BamRec| {
         rec.tid() == Some(reg_tid)
@@ -48,7 +49,7 @@ fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u
             skip = true;
             break;
         }
-        
+
         let cigar = b.cigar().unwrap();
 
         // Check that cigar does not have an Ins that does not follow a match.  We do not
@@ -61,16 +62,16 @@ fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u
             skip = true;
             break;
         }
-        
+
         let x = b.pos().unwrap();
         let y = b.rlen().unwrap() as usize + x;
 
         if let Some(p) = last {
             if fg == 0 {
-                skip = x < p;
+                skip = x <= p;
                 last = Some(y);
             } else {
-                skip = p < y;
+                skip = p <= y;
                 last = Some(x);
             }
             if skip {
@@ -81,17 +82,17 @@ fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u
             last = Some(if fg == 0 { y } else { x })
         }
     }
-    
+
     skip
 }
 
 /// Process the BAM record(s) coming from a single read
-fn handle_read<W: Write>(
+fn handle_read<W: Write, X: Write>(
     blst: &mut [BamRec],
     cfg: &Config,
     proc_work: &mut ProcWork<'_>,
     wrt: Option<&mut W>,
-    wrt_rej: Option<&mut W>,
+    wrt_rej: Option<&mut X>,
 ) -> anyhow::Result<()> {
     let reg_tid = cfg.region().tid();
     let qt = cfg.qual_threshold();
@@ -111,17 +112,21 @@ fn handle_read<W: Write>(
         let mut tot_mm = [0; 2];
 
         let mut start_end = StartEnd::new();
-
+        let mut dels = Vec::new();
         for b in blst.iter() {
             let reverse = (b.flag() & BAM_FREVERSE) != 0;
             let ref_start = b.pos().unwrap();
             let cigar = b.cigar().unwrap();
-            
+
             if !(pe || reverse) {
                 if prev.is_some() {
-                    if let Some(d) = proc_work.dels.as_mut() {
-                        d.add_del(align_store.pos(), ref_start, false, DelType::Split)
+                    if let Some(d) = proc_work.dels.as_mut()
+                        && let Some(idx) =
+                            d.add_del(align_store.pos(), ref_start - 1, false, DelType::Split)
+                    {
+                        dels.push(idx)
                     }
+
                     align_store.fill_to(b'S', QUAL_SKIP, ref_start);
                 } else {
                     start_end.set_start(ref_start);
@@ -266,10 +271,12 @@ fn handle_read<W: Write>(
                         if let Some(d) = proc_work.dels.as_mut() {
                             let x = align_store.pos();
                             let y = x + l - 1;
-                            if reverse {
-                                d.add_del(y, x + 1, true, DelType::Del)
+                            if let Some(idx) = if reverse {
+                                d.add_del(y, x, true, DelType::Del)
                             } else {
-                                d.add_del(x, y + 1, false, DelType::Del)
+                                d.add_del(x, y, false, DelType::Del)
+                            } {
+                                dels.push(idx)
                             }
                         }
                         align_store.add(&v, proc_work.ref_seq, proc_work);
@@ -281,8 +288,10 @@ fn handle_read<W: Write>(
 
             if !pe && reverse {
                 if let Some(x) = prev {
-                    if let Some(d) = proc_work.dels.as_mut() {
-                        d.add_del(x, align_store.pos(), true, DelType::Split)
+                    if let Some(d) = proc_work.dels.as_mut()
+                        && let Some(idx) = d.add_del(x - 1, align_store.pos(), true, DelType::Split)
+                    {
+                        dels.push(idx)
                     }
                     align_store.fill_to(b's', QUAL_SKIP, x)
                 } else {
@@ -298,6 +307,9 @@ fn handle_read<W: Write>(
         if let Some(d) = proc_work.dels.as_mut()
             && let Some((s, e)) = start_end.get()
         {
+            if !dels.is_empty() {
+                eprintln!("OOOK! {dels:?} {start_end:?}")
+            }
             d.add_read_extent(s, e)
         }
 
@@ -318,7 +330,6 @@ fn handle_read<W: Write>(
             }
             if let Some(b) = blst.first() {
                 let z = (tot_mm[1] as f64) / ((tot_mm[0] + tot_mm[1]) as f64);
-                //            println!("{}\t{:.6}\t{}\t{}", b.qname()?, z, tot_mm[0], tot_mm[1]);
                 if z >= 0.1 {
                     warn!(
                         "High mismatch rate for read {}\t{:.6}\t{}\t{}",
@@ -380,19 +391,20 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
     let reg = cfg.region();
 
     let mut wrt = if cfg.view() {
-        let view_output = format!("{}_view.txt", cfg.output_prefix());
-        Some(BufWriter::new(File::create(&view_output)?))
+        let view_output = format!("{}_view.txt.gz", cfg.output_prefix());
+        let w = CompressIo::new().path(&view_output).bufwriter()?;
+        Some(w)
     } else {
         None
     };
 
     let mut wrt_rej = if cfg.rejected() {
-        let view_output = format!("{}_rejected.txt", cfg.output_prefix());
-        Some(BufWriter::new(File::create(&view_output)?))
+        let rej_output = format!("{}_rejected.txt", cfg.output_prefix());
+        Some(BufWriter::new(File::create(&rej_output)?))
     } else {
         None
     };
-
+    
     let mut blst = Vec::new();
     for _ in 0..MAX_SPLIT {
         blst.push(BamRec::new()?)
@@ -426,5 +438,10 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
     if idx > 0 && idx <= MAX_SPLIT {
         handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut(), wrt_rej.as_mut())?
     }
+    
+    if let Some(d) = pw.dels.as_mut() {
+        d.write_deletions(cfg.output_prefix())?
+    }
+    
     Ok(())
 }

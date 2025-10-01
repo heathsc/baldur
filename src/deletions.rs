@@ -32,38 +32,31 @@ pub struct Deletion {
     start: usize,
     end: usize,
     size: isize,
-    reversed: bool,
     dtype: DelType,
+    ix: usize,
+    ct: [usize; 2],
 }
 
 impl fmt::Display for Deletion {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}\t{}\t{}\t{}\t{}",
-            self.start,
-            self.end,
-            if self.reversed { '-' } else { '+' },
-            self.size,
-            self.dtype,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            self.start, self.end, self.size, self.dtype, self.ix, self.ct[0], self.ct[1]
         )
     }
 }
 
 impl Deletion {
     pub fn start_end_pos(&self) -> (usize, usize) {
-        // Set coordinates to forward strand and add 10bp padding
-        if self.reversed {
-            (self.end, self.start)
-        } else {
-            (self.start, self.end)
-        }
+        (self.start, self.end)
     }
 }
+
 /// We store deletions at least as large as min_size in a hash table so we can get summaries of
 /// large deletions across all reads
 pub struct Deletions {
-    del_hash: HashMap<Deletion, usize>,
+    del_hash: HashMap<(usize, usize), Deletion>,
     read_extents: Vec<[isize; 2]>,
     min_size: isize,
     target_size: usize,
@@ -81,23 +74,48 @@ impl Deletions {
         }
     }
 
-    pub fn add_del(&mut self, start: usize, end: usize, reversed: bool, dtype: DelType) {
+    pub fn add_del(
+        &mut self,
+        start: usize,
+        end: usize,
+        reversed: bool,
+        dtype: DelType,
+    ) -> Option<usize> {
         let s = start as isize - self.adjust;
         let e = end as isize - self.adjust;
-        let size = e - s;
 
-        let start = s % (self.target_size as isize);
-        let end = e % (self.target_size as isize);
+        let size = e - s + if s <= e { 1 } else { -1 };
+
+        let adj = |x: isize| (x % (self.target_size as isize)) as usize;
+
         if size.abs() >= self.min_size {
-            let del = Deletion {
-                start: start as usize,
-                end: end as usize,
-                size,
-                dtype,
-                reversed,
+            let (start, end) = if reversed {
+                (adj(e), adj(s))
+            } else {
+                (adj(s), adj(e))
             };
-            let ct = self.del_hash.entry(del).or_insert(0);
-            *ct += 1;
+
+            let l = self.del_hash.len();
+            let del = self
+                .del_hash
+                .entry((start, end))
+                .or_insert_with(|| Deletion {
+                    start,
+                    end,
+                    size,
+                    dtype,
+                    ix: l,
+                    ct: [0; 2],
+                });
+            
+            if reversed {
+                del.ct[1] += 1
+            } else {
+                del.ct[0] += 1
+            }
+            Some(del.ix)
+        } else {
+            None
         }
     }
 
@@ -107,8 +125,8 @@ impl Deletions {
             .push([start as isize - self.adjust, end as isize - self.adjust]);
     }
 
-    pub fn iter<'a>(&'a self) -> hash_map::Iter<'a, Deletion, usize> {
-        self.del_hash.iter()
+    pub fn iter<'a>(&'a self) -> hash_map::Values<'a, (usize, usize), Deletion> {
+        self.del_hash.values()
     }
 
     pub fn read_extents(&self) -> &[[isize; 2]] {
@@ -127,8 +145,8 @@ impl Deletions {
         let file_name = format!("{}_del.txt", prefix);
         let mut wrt = BufWriter::new(File::create(&file_name)?);
 
-        for (d, x) in self.del_hash.iter() {
-            writeln!(wrt, "{d}\t{x}")?;
+        for (_, d) in self.del_hash.iter() {
+            writeln!(wrt, "{d}")?;
         }
 
         Ok(())
@@ -139,7 +157,7 @@ pub struct DeletionWork {
     dels: Deletions,
     mask: Box<[u64]>,
     reads: Box<[[isize; 2]]>,
-    del_cts: Vec<(usize, usize)>,
+    del_cts: Box<[(usize, usize)]>,
     n_u64: usize,
 }
 
@@ -153,7 +171,7 @@ impl DeletionWork {
         let mut mask = vec![0u64; re.len() * n_u64];
         let target_size = dels.target_size();
 
-        for (i, (d, _)) in dels.iter().enumerate() {
+        for d in dels.iter() {
             let (s, e) = d.start_end_pos();
             let overlap_origin = e < s;
             let start = s.saturating_sub(EXTEND_DEL);
@@ -162,11 +180,14 @@ impl DeletionWork {
             } else {
                 e + EXTEND_DEL
             };
+            
+            let i = d.ix;
+            
             let (j, mk) = (i >> 6, 1u64 << (i & 63));
 
             for (x, m) in re.iter().zip(mask.chunks_mut(n_u64)) {
                 // Is del covered by read?
-                let tst = |a, b| (a as isize) >= x[0] && (b as isize) < x[1];
+                let tst = |a, b| (a as isize) >= x[0] && (b as isize) <= x[1];
 
                 if tst(start, end)
                     || (!overlap_origin && tst(start + target_size, end + target_size))
@@ -185,7 +206,7 @@ impl DeletionWork {
                 }
             }
         }
-        let del_cts: Vec<(usize, usize)> = Vec::with_capacity(n_dels);
+        let del_cts: Box<[(usize, usize)]> = vec![(0,0); n_dels].into_boxed_slice();
         Self {
             dels,
             mask: mask1.into_boxed_slice(),
@@ -206,9 +227,9 @@ impl DeletionWork {
         let del_cts = &mut self.del_cts;
         let re = &self.reads;
         let mask = &self.mask;
-        
-        del_cts.clear();
-        for (i, (d, c)) in self.dels.iter().enumerate() {
+
+        del_cts.fill((0,0));
+        for d in self.dels.iter() {
             let (start, end) = d.start_end_pos();
             let z = if start <= end {
                 (start..=end).contains(&x)
@@ -216,12 +237,11 @@ impl DeletionWork {
                 x >= start || x <= end
             };
 
+            let i = d.ix;
             if z {
                 let (j, mk) = (i >> 6, 1u64 << (i & 63));
                 msk[j] |= mk;
-                del_cts.push((*c, 0))
-            } else {
-                del_cts.push((0, 0))
+                del_cts[i] = (d.ct[0] + d.ct[1], 0)
             }
         }
         if n_u64 > 0 {
@@ -250,9 +270,10 @@ impl DeletionWork {
         }
 
         let mut z = 1.0;
-        for ((a, b), (d, ct)) in self.del_cts.drain(..).zip(self.dels.iter()) {
+        for d in self.dels.iter() {
+            let (a, b) = del_cts[d.ix];
             if a > b {
-                panic!("Odd missed read for del at x: {x} - {a} {b}  {d} {ct}");
+                panic!("Odd missed read for del at x: {x} - {a} {b}  {d} {:?}", d.ct);
             } else if b > 0 {
                 let p = a as f64 / b as f64;
                 z *= 1.0 - p;

@@ -11,11 +11,10 @@ pub struct ProcWork<'a> {
 }
 
 impl<'a> ProcWork<'a> {
-    pub fn new(cfg: &'a Config) -> Self {
-        
+    pub fn new(cfg: &'a Config) -> anyhow::Result<Self> {
         let reg = cfg.region();
         let ref_seq = cfg.reference().contig(reg.tid()).unwrap().seq();
-        
+
         let dels = if cfg.output_deletions() {
             Some(Deletions::new(
                 cfg.region().ctg_size(),
@@ -25,13 +24,13 @@ impl<'a> ProcWork<'a> {
         } else {
             None
         };
-    
-        Self {
+
+        Ok(Self {
             depth: Depth::new(reg.len(), !cfg.no_call()),
             qual_hist: [[0; 4]; 64],
             ctxt_hist: [[[0; 4]; 64]; N_CTXT],
             ref_seq,
             dels,
-        }
+        })
     }
 }
