@@ -8,8 +8,10 @@ use r_htslib::*;
 use compress_io::compress::CompressIo;
 
 use crate::{
-    align_store::AlignStore, cli::Config, context::*, deletions::DelType, process::ProcWork,
+    align_store::AlignStore, cli::Config, context::*, process::ProcWork,
 };
+
+use super::deletions::DelType;
 
 const QUAL_SKIP: u8 = 20;
 const MAX_SPLIT: usize = 8;
@@ -112,21 +114,27 @@ fn handle_read<W: Write, X: Write>(
         let mut tot_mm = [0; 2];
 
         let mut start_end = StartEnd::new();
-        let mut dels = Vec::new();
+        let mut largest_del: Option<(usize, usize, bool, DelType)> = None;
+        
+        let mut check_largest_del = |start: usize, end: usize, rev: bool, dt: DelType| {
+            let del_size = start.abs_diff(end);
+            if largest_del.as_ref().map(|s| del_size > s.0.abs_diff(s.1)).unwrap_or(true) {
+                largest_del = Some((start, end, rev, dt))
+            }    
+        };
+        
+        // We know all segments are on the same strand as we checked in the sort_and_filter call above
+        let reverse = (blst[0].flag() & BAM_FREVERSE) != 0;
+        
         for b in blst.iter() {
-            let reverse = (b.flag() & BAM_FREVERSE) != 0;
             let ref_start = b.pos().unwrap();
             let cigar = b.cigar().unwrap();
 
             if !(pe || reverse) {
                 if prev.is_some() {
-                    if let Some(d) = proc_work.dels.as_mut()
-                        && let Some(idx) =
-                            d.add_del(align_store.pos(), ref_start - 1, false, DelType::Split)
-                    {
-                        dels.push(idx)
+                    if proc_work.dels.is_some() {
+                        check_largest_del(align_store.pos(), ref_start - 1, false, DelType::Split);
                     }
-
                     align_store.fill_to(b'S', QUAL_SKIP, ref_start);
                 } else {
                     start_end.set_start(ref_start);
@@ -268,16 +276,14 @@ fn handle_read<W: Write, X: Write>(
                         let c1 = qual_cal(c, max_indel_qual, 1, ctxt);
                         let b = if (c1 >> 2) < qt { del_low } else { del };
                         let v = vec![(b, c1, **ctxt); l];
-                        if let Some(d) = proc_work.dels.as_mut() {
+                        if proc_work.dels.is_some() {
                             let x = align_store.pos();
                             let y = x + l - 1;
-                            if let Some(idx) = if reverse {
-                                d.add_del(y, x, true, DelType::Del)
+                            if reverse {
+                                check_largest_del(y, x, true, DelType::Del)
                             } else {
-                                d.add_del(x, y, false, DelType::Del)
-                            } {
-                                dels.push(idx)
-                            }
+                                check_largest_del(x, y, false, DelType::Del)
+                            }; 
                         }
                         align_store.add(&v, proc_work.ref_seq, proc_work);
                     }
@@ -288,10 +294,8 @@ fn handle_read<W: Write, X: Write>(
 
             if !pe && reverse {
                 if let Some(x) = prev {
-                    if let Some(d) = proc_work.dels.as_mut()
-                        && let Some(idx) = d.add_del(x - 1, align_store.pos(), true, DelType::Split)
-                    {
-                        dels.push(idx)
+                    if proc_work.dels.is_some() {
+                        check_largest_del(x-1, align_store.pos(), true, DelType::Split)
                     }
                     align_store.fill_to(b's', QUAL_SKIP, x)
                 } else {
@@ -307,10 +311,10 @@ fn handle_read<W: Write, X: Write>(
         if let Some(d) = proc_work.dels.as_mut()
             && let Some((s, e)) = start_end.get()
         {
-            if !dels.is_empty() {
-                eprintln!("OOOK! {dels:?} {start_end:?}")
-            }
-            d.add_read_extent(s, e)
+            let del_idx = largest_del.take().and_then(|(start, end, rev, dt)| {
+                d.add_del(start, end, rev, dt)
+            });
+            d.add_read_extent(s, e, reverse, del_idx)
         }
 
         if align_store.changed() {
@@ -437,10 +441,6 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
     // Process remaining reads (if any)
     if idx > 0 && idx <= MAX_SPLIT {
         handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut(), wrt_rej.as_mut())?
-    }
-    
-    if let Some(d) = pw.dels.as_mut() {
-        d.write_deletions(cfg.output_prefix())?
     }
     
     Ok(())

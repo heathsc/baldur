@@ -4,18 +4,24 @@ use std::{
     io::{BufWriter, Write},
 };
 
+use anyhow::Context;
+
 use log::Level::Trace;
 
 use r_htslib::*;
 
+mod deletions;
+mod read;
+
+use deletions::DeletionWork;
+use read::read_file;
+
 use crate::{
     alleles::*,
     cli::Config,
-    deletions::DeletionWork,
     depth::*,
     fisher::FisherTest,
     freq::{estimate_single_base_freq, process_large_deletions},
-    read::read_file,
     vcf::{VcfCalc, VcfRes, write_vcf_header},
 };
 
@@ -51,11 +57,17 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
     let depth_output = format!("{}_depth.txt", cfg.output_prefix());
     let mut wrt = BufWriter::new(File::create(&depth_output)?);
 
-    let mut del_work = pw
-        .dels
-        .take()
-        .map(DeletionWork::new);
+    let mut del_work = match pw.dels.take() {
+        Some(d) => {
+            DeletionWork::new(d).with_context(|| "Error when estimating deletion frequencies")?
+        }
+        None => None,
+    };
 
+    if let Some(dw) = del_work.as_ref() {
+        dw.write_deletions(cfg.output_prefix())?
+    }
+    
     let ref_base = |x: usize| BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;
 
     // Print out depth records
@@ -72,10 +84,10 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
         )?;
 
         if let Some(dw) = del_work.as_mut() {
-            let z = dw.get_del_prob(x + 1);
+            let z = dw.get_del_prob(x + 1) * 100.0;
             writeln!(wrt, "\t{z}")?;
         } else {
-            writeln!(wrt)?;
+            writeln!(wrt, "\t0.0")?;
         }
     }
 

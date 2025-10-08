@@ -1,4 +1,6 @@
-use crate::{cli::Config, context::N_CTXT, deletions::Deletions, depth::Depth, reference::RefPos};
+use crate::{cli::Config, context::N_CTXT, depth::Depth, reference::RefPos};
+
+use super::deletions::Deletions;
 
 type Qhist = [[usize; 4]; 64];
 

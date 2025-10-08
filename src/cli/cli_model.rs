@@ -95,7 +95,7 @@ pub(super) fn cli_model() -> Command {
             .long("large-deletion-limit")
             .value_parser(value_parser!(usize))
             .value_name("SIZE")
-            .default_value("25")
+            .default_value("64")
             .help("Minimum size for a large deletion"),
     )
     .next_help_heading("Operation")
