@@ -95,13 +95,34 @@ fn collect_contrib(n_dels: usize, rt: &RTree<Deletion>, re: &[ReadExtent]) -> Li
             ds.add_index(i as usize, 1);
         }
 
+        /* 
+        let mut overlap = false;
+        for (j, (a, b)) in ds.dset(0).iter().zip(ds.dset(1).iter()).enumerate() {
+            let mut x = a & b;
+            if x != 0 {
+                if !overlap {
+                    eprintln!("OOOK! {r:?}");
+                    overlap = true;
+                }
+
+                let mut i = 0;
+                while x != 0 {
+                    if (x & 1) != 0 {
+                        eprintln!("  Del {}", (j << 6) | i)
+                    }
+                    x >>= 1;
+                    i += 1;
+                }
+            }
+        } */
+
         assert!(
             ds.dset(0)
                 .iter()
                 .zip(ds.dset(1).iter())
                 .all(|(a, b)| (a & b) == 0),
             "Covered and excluded sets overlap"
-        );
+        ); 
 
         read_dels.add(ds, r.obs_deletion());
     }
@@ -134,11 +155,11 @@ fn get_bb_from_coords(s: isize, e: isize) -> Option<AABB<[isize; 2]>> {
 }
 
 fn get_bb_from_point(s: isize) -> AABB<[isize; 2]> {
-    if DEL_LIMIT < 1 {
+    if DEL_LIMIT < 2 {
         AABB::from_point([s, 0])
     } else {
-        let x = s - DEL_LIMIT + 1;
-        let y = s + DEL_LIMIT - 1;
+        let x = s - DEL_LIMIT + 2;
+        let y = s + DEL_LIMIT - 2;
         AABB::from_corners([x, 0], [y, 1])
     }
 }
