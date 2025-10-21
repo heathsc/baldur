@@ -1,6 +1,6 @@
 use rstar::{AABB, RTree};
 
-use super::{Deletion, ReadDels};
+use super::{Deletion, ReadDelSet, ReadDels};
 
 pub fn calc_del_prob(x: usize, rt: &RTree<Deletion>, fq: &[f64], target_size: usize) -> f64 {
     let mut z = 0.0;
@@ -18,184 +18,154 @@ pub fn calc_del_prob(x: usize, rt: &RTree<Deletion>, fq: &[f64], target_size: us
     z
 }
 
-pub struct LikeContrib {
-    obs_counts: Vec<(u64, u64)>,
-    read_dels: ReadDels,
-}
-
-impl LikeContrib {
-    pub fn new(obs_counts: Vec<(u64, u64)>, read_dels: ReadDels) -> Self {
-        Self {
-            obs_counts,
-            read_dels,
-        }
-    }
-
-    pub fn est_freq(&self) -> anyhow::Result<Vec<f64>> {
+impl ReadDels {
+    pub fn est_freq(&self, obs_cts: &[(u64, u64)]) -> anyhow::Result<Vec<f64>> {
         info!("Estimating deletion frequencies");
-        let nd = self.obs_counts.len();
+        let nd = obs_cts.len();
         assert!(nd > 1);
-        let mut fq = self.calc_initial_freq();
-        let del_mask = self.read_dels.del_mask();
-        let mask = del_mask.dset(0);
+        let mut fq = calc_initial_freq(obs_cts);
 
         let mut tmp_dels: Vec<usize> = Vec::with_capacity(nd - 1);
 
         let mut cts = vec![0.0f64; nd];
         // gradient vector
-        let mut g = vec![0.0f64; nd - 1];
+        // let mut g = vec![0.0f64; nd - 1];
 
         let mut converged = false;
+
+        let mut old_lk: Option<f64> = None;
         // EM steps
-        for it in 0..1000000 {
-            cts.fill(0.0);
-            g.fill(0.0);
-            let mut lk = 0.0;
-            for (rd, ct) in self.read_dels.iter() {
-                let ct = *ct as f64;
+        for _ in 0..1000000 {
+            let lk = self.em_update(&mut cts, &mut tmp_dels, &mut fq);
 
-                // For all reads we now add contricutions from the excluded deletions. For these we add 'dummy reads'
-                // to compensate for the reads that have been excluded
-                tmp_dels.clear();
-                let mut excl_freq = 0.0;
-                handle_mask(rd.dset(1).iter().copied(), |ix| {
-                    tmp_dels.push(ix);
-                    excl_freq += fq[ix];
-                });
+            let diff = old_lk.take().map(|x| lk - x);
 
-                let excl_freq1 = 1.0 - excl_freq;
-                
-                if excl_freq > 0.0 {
-                    let ct1 = ct / (1.0 - excl_freq);
-                    for i in tmp_dels.drain(..) {
-                        cts[i] += ct1 * fq[i];
-                    }
-                }
+            // eprintln!("{it}\t{lk}\t{diff:?}\t{}\t{}", fq[0], fq[nd - 1]);
 
-                if let Some(ix) = rd.obs_index() {
-                    // Get read contributions for observed deletions
-                    cts[ix] += ct;
-                    assert!(fq[ix] < excl_freq1);
-                    let z = fq[ix] / excl_freq1;
-
-                    lk += z.ln() * ct;
-                    g[ix] += ct / fq[ix];
-                    
-                    // Since we are dividing by 1 - exlc_freq, we also have ontributions to the gradients of
-                    // the excluded deletions
-                    let zg = ct / excl_freq1;
-                    handle_mask(rd.dset(1).iter().copied(), |i| {
-                        g[i] += zg;
-                    });
-                } else {
-                    // Get read contributions where no deletion was observed
-                    //
-                    // Go through all deletions that could have been observed if the read was full length.
-                    // This means all deletions that are not covered by the read and do not overlap the
-                    // physical start of the read.
-                    // To get this we do the bitwise or of the covered and excluded deletions, then
-                    // the bitwise xor of this with the mask of all deletions.
-                    tmp_dels.clear();
-                    let mut z = fq[nd - 1];
-                    // eprintln!("Adding wt {} {}", nd - 1, z);
-                    tmp_dels.push(nd - 1);
-                    handle_mask(
-                        rd.dset(0)
-                            .iter()
-                            .zip(rd.dset(1).iter())
-                            .zip(mask.iter())
-                            .map(|((m1, m2), m3)| (m1 | m2) ^ m3),
-                        |ix| {
-                            tmp_dels.push(ix);
-                            z += fq[ix];
-                        },
-                    );
-
-                    let y = ct / z;
-                    for i in tmp_dels.iter().copied() {
-                        cts[i] += fq[i] * y;
-                    }
-                    assert!(z - excl_freq1 < 1.0e-12, "{z} {excl_freq}");
-                    let zz = z / excl_freq;
-
-                    lk += zz.ln() * ct;
-
-                    let mut zc = 0.0;
-                    handle_mask(rd.dset(0).iter().copied(), |ix| {
-                        g[ix] -= y;
-                        zc += fq[ix];
-                    });
-                
-                    
-                    let zg = -ct * zc / (z * excl_freq1);
-                    handle_mask(rd.dset(1).iter().copied(), |ix| {
-                        g[ix] += zg;
-                    });
-                }
-            }
-
-            // Get new estimates of frequencies
-            let mut ss = 0.0;
-            let z = cts.iter().sum::<f64>();
-
-            for (c, f) in cts.iter().zip(fq.iter_mut()) {
-                let t = *f;
-
-                *f = *c / z;
-                ss += (t - *f).powi(2);
-            }
-            let delta = (ss / nd as f64).sqrt();
-            let gsq = g.iter().map(|x| x * x).sum::<f64>();
-            let grms = (gsq / (nd - 1) as f64).sqrt();
-
-            eprintln!(
-                "{it}\t{lk}\t{delta}\t{grms}\t{z}\t{}\t{}",
-                fq[0],
-                fq[nd - 1]
-            );
-            if delta < 1.0e-12 {
-                debug!(
-                    "Deletion frequency estimation: convergence criteria achieved after {} iterations",
-                    it + 1
-                );
+            // Check convergence
+            if diff.map(|d| d < 1.0e-8).unwrap_or(false) {
                 converged = true;
                 break;
             }
+
+            old_lk = Some(lk);
         }
+
         if !converged {
             Err(anyhow!("Deletion frequency estimates did not converge"))
         } else {
-            for (i, (f, (c, n))) in fq.iter().zip(self.obs_counts.iter()).enumerate() {
-                let z = *c as f64 / *n as f64;
-                eprintln!("{i}\t{f}\t{z}\t{c}\t{n}\t{}", g[i]);
-            }
             Ok(fq)
         }
     }
 
-    fn calc_initial_freq(&self) -> Vec<f64> {
-        debug!("Get initial frequency estimates");
-        let n = self.obs_counts.len();
-        let mut fq = Vec::with_capacity(n);
-        let mut t = 0.0;
-        for (a, b) in self.obs_counts[..n - 1].iter() {
-            let p = *a as f64 / *b as f64;
-            fq.push(p);
-            t += p;
-        }
-        if t < 1.0 {
-            fq.push(1.0 - t)
-        } else {
-            // Rescale
-            let p = 1.0 / n as f64;
-            fq.push(p);
-            t += p;
-            for p in fq.iter_mut() {
-                *p /= t
+    fn em_update(&self, cts: &mut [f64], tmp_dels: &mut Vec<usize>, fq: &mut [f64]) -> f64 {
+        // Initialize tmp storage and likelihood
+        let mut lk = 0.0;
+        cts.fill(0.0);
+
+        for (rd, ct) in self.iter() {
+            let ct = *ct as f64;
+
+            // Handle contributions from excluded deletions. Get total frequency
+            // of excluded alleles
+            let excl_fq = em_excl_contrib(rd, ct, cts, tmp_dels, fq);
+
+            if let Some(ix) = rd.obs_index() {
+                lk += em_handle_observed_del(ct, ix, cts, fq, excl_fq)
+            } else {
+                lk += em_handle_unobserved_del(rd, ct, cts, tmp_dels, fq, excl_fq)
             }
         }
-        fq
+
+        // Update frequency estimates
+        let z = cts.iter().sum::<f64>();
+
+        for (c, f) in cts.iter().zip(fq.iter_mut()) {
+            *f = *c / z;
+        }
+
+        lk
     }
+}
+
+fn calc_initial_freq(obs_cts: &[(u64, u64)]) -> Vec<f64> {
+    debug!("Get initial frequency estimates");
+    let n = obs_cts.len();
+    let mut fq = Vec::with_capacity(n);
+    let mut t = 0.0;
+    for (a, b) in obs_cts[..n - 1].iter() {
+        let p = *a as f64 / *b as f64;
+        fq.push(p);
+        t += p;
+    }
+    fq.push(t);
+
+    // Rescale
+    for p in fq.iter_mut() {
+        *p /= 2.0 * t
+    }
+    fq
+}
+/// Get read contributions for observed deletions
+fn em_handle_observed_del(ct: f64, ix: usize, cts: &mut [f64], fq: &[f64], excl_fq: f64) -> f64 {
+    cts[ix] += ct;
+    (fq[ix] / (1.0 - excl_fq)).ln() * ct
+}
+
+/// Get read contributions where no deletion was observed
+///
+/// Go through all deletions that could have been observed if the read was full length.
+/// This means all deletions that are not covered by the read and do not overlap the
+/// physical start of the read.
+/// To get this we do the bitwise or of the covered and excluded deletions, then
+/// the bitwise xor of this with the mask of all deletions.
+fn em_handle_unobserved_del(
+    rd: &ReadDelSet,
+    ct: f64,
+    cts: &mut [f64],
+    tmp_dels: &mut Vec<usize>,
+    fq: &[f64],
+    excl_fq: f64,
+) -> f64 {
+    tmp_dels.clear();
+    let nd = cts.len();
+    let mut z = fq[nd - 1];
+
+    tmp_dels.push(nd - 1);
+    handle_mask(rd.dset(2).iter().copied(), |ix| {
+        tmp_dels.push(ix);
+        z += fq[ix];
+    });
+
+    let y = ct / z;
+    for i in tmp_dels.iter().copied() {
+        cts[i] += fq[i] * y;
+    }
+
+    (z / (1.0 - excl_fq)).ln() * ct
+}
+
+/// Get contributions from deletions are excluded (due to them overlapping the physical start of the read)
+fn em_excl_contrib(
+    rd: &ReadDelSet,
+    ct: f64,
+    cts: &mut [f64],
+    tmp_dels: &mut Vec<usize>,
+    fq: &[f64],
+) -> f64 {
+    tmp_dels.clear();
+
+    let mut excl_fq = 0.0;
+    handle_mask(rd.dset(1).iter().copied(), |ix| {
+        tmp_dels.push(ix);
+        excl_fq += fq[ix];
+    });
+    
+    for i in tmp_dels.drain(..) {
+        cts[i] += ct * fq[i];
+    }
+
+    excl_fq
 }
 
 fn handle_mask<I, F>(mask_itr: I, mut f: F)

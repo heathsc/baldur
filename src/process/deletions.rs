@@ -10,10 +10,9 @@ mod del_prob;
 mod del_set;
 mod rtree;
 
-use del_prob::LikeContrib;
-use del_set::{DelSet, ReadDels};
+use del_set::{DelSet, ReadDels, ReadDelSet};
 
-use crate::process::deletions::del_prob::calc_del_prob;
+use crate::{cli::Guide, process::deletions::del_prob::calc_del_prob};
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum DelType {
@@ -65,20 +64,22 @@ impl fmt::Display for Deletion {
 }
 
 #[derive(Debug)]
-pub struct ReadExtent {
+pub struct ReadExtent<'a> {
     coords: DelCoords,
     target_size: isize,
     reversed: bool,
     obs_deletion: Option<u64>,
+    guide: Option<&'a Guide>,
 }
 
-impl ReadExtent {
+impl <'a>ReadExtent<'a> {
     fn new(
         start: isize,
         end: isize,
         reversed: bool,
         obs_deletion: Option<u64>,
         target_size: isize,
+        guide: Option<&'a Guide>
     ) -> Self {
         assert!(start < end);
         Self {
@@ -86,6 +87,7 @@ impl ReadExtent {
             reversed,
             obs_deletion,
             target_size,
+            guide
         }
     }
 
@@ -104,6 +106,10 @@ impl ReadExtent {
         s % self.target_size
     }
 
+    fn reversed(&self) -> bool {
+        self.reversed
+    }
+    
     #[inline]
     fn coords2(&self) -> Option<(isize, isize)> {
         if self.coords.end > self.target_size {
@@ -157,15 +163,15 @@ impl Ord for DelCoords {
 
 /// We store deletions at least as large as min_size in a hash table so we can get summaries of
 /// large deletions across all reads
-pub struct Deletions {
+pub struct Deletions<'a> {
     del_hash: Option<BTreeMap<DelCoords, Deletion>>,
-    read_extents: Option<Vec<ReadExtent>>,
+    read_extents: Option<Vec<ReadExtent<'a>>>,
     min_size: isize,
     target_size: usize,
     adjust: isize,
 }
 
-impl Deletions {
+impl <'a>Deletions<'a> {
     pub fn new(target_size: usize, min_size: usize, adjust: usize) -> Self {
         Self {
             del_hash: Some(BTreeMap::new()),
@@ -230,6 +236,7 @@ impl Deletions {
         end: usize,
         reversed: bool,
         del_idx: Option<u64>,
+        guide: Option<&'a Guide>,
     ) {
         assert!(start < end);
         // Adjust coodinates so that start is in first genome copy if necessary
@@ -243,6 +250,7 @@ impl Deletions {
             reversed,
             del_idx,
             self.target_size as isize,
+            guide,
         ));
     }
 
@@ -274,12 +282,12 @@ impl DeletionWork {
             let target_size = dels.target_size();
             
             // Get likelihood contributions from reads
-            let (lc, del_tree) = dels
+            let (obs_cts, read_dels, del_tree) = dels
                 .get_like_data()
                 .expect("Problem getting deletion contributions");
 
             // Estimate deletion frequencies
-            let del_freq = lc.est_freq()?;
+            let del_freq = read_dels.est_freq(&obs_cts)?;
             Ok(Some(Self { del_tree, del_freq, target_size }))
         }
     }

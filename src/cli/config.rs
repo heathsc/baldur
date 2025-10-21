@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{model::N_QUAL, reference::Reference};
-use super::Region;
+use super::{Guides, Region};
 
 mod getters;
 mod mk_config;
@@ -9,6 +9,7 @@ mod mk_config;
 pub struct Config {
     region: Region,
     reference: Reference,
+    guides: Option<Guides>,
     output_prefix: Box<str>,
     sample: Option<Box<str>>,
     adjust: usize,

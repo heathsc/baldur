@@ -36,6 +36,7 @@ impl RefPos {
     }
 }
 
+#[derive(Debug)]
 pub struct Contig {
     tid: usize,
     seq: Vec<RefPos>,

@@ -127,6 +127,14 @@ pub(super) fn cli_model() -> Command {
             .help("Reference FASTA file"),
     )
     .arg(
+        Arg::new("guides")
+            .short('g')
+            .long("guides")
+            .value_parser(value_parser!(PathBuf))
+            .value_name("Guide File")
+            .help("Guide definition file"),
+    )
+    .arg(
         Arg::new("rs_list")
             .long("rs-list")
             .value_parser(value_parser!(PathBuf))

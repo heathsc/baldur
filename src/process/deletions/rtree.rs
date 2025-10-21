@@ -5,7 +5,7 @@ use std::{
 
 use rstar::{AABB, RTree, RTreeObject};
 
-use super::{DelSet, DelType, Deletion, Deletions, LikeContrib, ReadDels, ReadExtent};
+use super::{DelSet, DelType, Deletion, Deletions, ReadDels, ReadExtent, del_set::calc_n_u64};
 
 /// We assume that a DEL can not be observed for technical reasons if it occurs within
 /// DEL_LIMIT of the end of a read
@@ -18,7 +18,7 @@ impl RTreeObject for Deletion {
     }
 }
 
-impl Deletions {
+impl <'a>Deletions<'a> {
     fn build_rtree(&mut self) -> Option<(RTree<Deletion>, usize)> {
         debug!("Building RTree from deletions");
         self.del_hash.take().map(|dh| {
@@ -29,12 +29,14 @@ impl Deletions {
         })
     }
 
-    pub(super) fn get_like_data(&mut self) -> Option<(LikeContrib, RTree<Deletion>)> {
+    pub(super) fn get_like_data(&mut self) -> Option<(Vec<(u64, u64)>, ReadDels, RTree<Deletion>)> {
         info!("Collecting information to estimate deletion frequencies");
         if let Some((rt, n_dels)) = self.build_rtree()
             && let Some(re) = self.read_extents.take()
         {
-            Some((collect_contrib(n_dels, &rt, &re), rt))
+            let (obs, rd) = collect_contrib(n_dels, &rt, &re);
+
+            Some((obs, rd, rt))
         } else {
             None
         }
@@ -45,7 +47,11 @@ impl Deletions {
 ///
 /// Observed deletions contributes counts for each deletion while reads with no observed deletions
 /// controbute counts to all deletions that are not covered by the reads
-fn collect_contrib(n_dels: usize, rt: &RTree<Deletion>, re: &[ReadExtent]) -> LikeContrib {
+fn collect_contrib(
+    n_dels: usize,
+    rt: &RTree<Deletion>,
+    re: &[ReadExtent],
+) -> (Vec<(u64, u64)>, ReadDels) {
     debug!("Collecting contributions from reads");
     // Vector of (observations, reads_covering) for each observed deletion.
     // obs_counts[n_dels] is for the no deletion (i.e. wildtype) case
@@ -57,17 +63,70 @@ fn collect_contrib(n_dels: usize, rt: &RTree<Deletion>, re: &[ReadExtent]) -> Li
     // Add a dummy observation for the wildtype allele so that tje mle whould be >0
     obs_counts[wildtype] = (0, 1);
     let mut read_dels = ReadDels::new(n_dels);
+    let mask = read_dels.del_mask();
 
-    for (r, (bb, bb2)) in re.iter().filter_map(|r| get_bb(r).map(|bb| (r, bb))) {
+    for r in re.iter() {
         if let Some(i) = r.obs_deletion() {
             obs_counts[i as usize].0 += 1;
         }
 
-        // Build up bitmaps for covered and excluded deletions
-        let mut ds = DelSet::new(n_dels, 2);
+        // Build up bitmaps for observed, excluded and non-observed deletions
+        let mut ds = DelSet::new(n_dels, 3);
 
+        let k = calc_n_u64(n_dels);
+        if !get_contained_dels(rt, r, &mut obs_counts, &mut ds) {
+            continue;
+        }
+
+        get_excluded_dels(rt, r, &mut ds);
+
+        // Remove excluded dels from contained set
+
+        let (d0, d1) = ds.all_dset().split_at_mut(k);
+        for (m0, m1) in d0.iter_mut().zip(d1.iter()) {
+            // Turn off bits (dels) in the observed set that are also in the excluded set
+            *m0 ^= *m0 & *m1
+        } 
+    
+        // Set non-observed set as the complement of the union of the contained and excluded sets
+        let (d0, d2) = ds.all_dset().split_at_mut(2 * k);
+        let msk = mask.dset(0);
+        for (i, m2) in d2.iter_mut().enumerate() {
+            *m2 = msk[i] ^ (d0[i] | d0[i + k]);
+        }
+        for (((a, b), c), d) in ds
+            .dset(0)
+            .iter()
+            .zip(ds.dset(1).iter())
+            .zip(ds.dset(2).iter())
+            .zip(msk.iter())
+        {
+            if (a & b) != 0 || (a & c) != 0 || (b & c) != 0 {
+                panic!("Overlap between deletion sets")
+            }
+            if (a | b | c) != *d {
+                panic!("Union of sets does not include all deletions")
+            }
+        }
+        read_dels.add(ds, r.obs_deletion());
+    }
+    for (i, o) in obs_counts[..n_dels - 1].iter().enumerate() {
+        assert!(o.0 > 0 && o.0 <= o.1, "Odd obs for deletion {i} {o:?}");
+    }
+
+    (obs_counts, read_dels)
+}
+
+/// Get deletions totally contained within read
+fn get_contained_dels(
+    rt: &RTree<Deletion>,
+    r: &ReadExtent,
+    obs_counts: &mut [(u64, u64)],
+    ds: &mut DelSet,
+) -> bool {
+    if let Some((bb, bb2)) = get_bb(r) {
         // Collect deletions that are completely covered by this read
-        for d in rt.locate_in_envelope(&bb) {
+        for d in rt.locate_in_envelope_intersecting(&bb) {
             let i = d.ix;
             obs_counts[i as usize].1 += 1;
             ds.add_index(i as usize, 0);
@@ -75,62 +134,36 @@ fn collect_contrib(n_dels: usize, rt: &RTree<Deletion>, re: &[ReadExtent]) -> Li
 
         // If necessary, check in alternate spae of dual reference
         if let Some(bb) = bb2.as_ref() {
-            for d in rt.locate_in_envelope(bb) {
+            for d in rt.locate_in_envelope_intersecting(bb) {
                 let i = d.ix;
                 obs_counts[i as usize].1 += 1;
                 ds.add_index(i as usize, 0);
             }
         }
-
-        // Find deletions that overlap physical start point of read
-        let bb = get_bb_from_point(r.physical_start());
-        for d in rt.locate_in_envelope_intersecting(&bb) {
-            let i = d.ix;
-            ds.add_index(i as usize, 1);
-        }
-        // And check in 2nd copy of dual referenced
-        let bb = get_bb_from_point(r.physical_start() + r.target_size);
-        for d in rt.locate_in_envelope_intersecting(&bb) {
-            let i = d.ix;
-            ds.add_index(i as usize, 1);
-        }
-
-        /* 
-        let mut overlap = false;
-        for (j, (a, b)) in ds.dset(0).iter().zip(ds.dset(1).iter()).enumerate() {
-            let mut x = a & b;
-            if x != 0 {
-                if !overlap {
-                    eprintln!("OOOK! {r:?}");
-                    overlap = true;
-                }
-
-                let mut i = 0;
-                while x != 0 {
-                    if (x & 1) != 0 {
-                        eprintln!("  Del {}", (j << 6) | i)
-                    }
-                    x >>= 1;
-                    i += 1;
-                }
-            }
-        } */
-
-        assert!(
-            ds.dset(0)
-                .iter()
-                .zip(ds.dset(1).iter())
-                .all(|(a, b)| (a & b) == 0),
-            "Covered and excluded sets overlap"
-        ); 
-
-        read_dels.add(ds, r.obs_deletion());
+        true
+    } else {
+        false
     }
-    for (i, o) in obs_counts[..n_dels - 1].iter().enumerate() {
-        assert!(o.0 > 0 && o.0 <= o.1, "Odd obs for deletion {i} {o:?}");
-    }
+}
 
-    LikeContrib::new(obs_counts, read_dels)
+fn get_excluded_dels(rt: &RTree<Deletion>, r: &ReadExtent, ds: &mut DelSet) {
+    
+    let (bb1, bb2) = if let Some(g) = r.guide {
+        g.get_bb(r.reversed(), r.target_size)
+    } else {
+        (get_bb_from_point(r.physical_start(), r.reversed()),get_bb_from_point(r.physical_start() + r.target_size, r.reversed()))
+    };
+    
+    // Find deletions that overlap
+    for d in rt.locate_in_envelope_intersecting(&bb1) {
+        let i = d.ix;
+        ds.add_index(i as usize, 1);
+    }
+    // And check in 2nd copy of dual referenced
+    for d in rt.locate_in_envelope_intersecting(&bb2) {
+        let i = d.ix;
+        ds.add_index(i as usize, 1);
+    }
 }
 
 type BBox = AABB<[isize; 2]>;
@@ -154,12 +187,15 @@ fn get_bb_from_coords(s: isize, e: isize) -> Option<AABB<[isize; 2]>> {
     }
 }
 
-fn get_bb_from_point(s: isize) -> AABB<[isize; 2]> {
+fn get_bb_from_point(s: isize, rev: bool) -> AABB<[isize; 2]> {
     if DEL_LIMIT < 2 {
         AABB::from_point([s, 0])
     } else {
-        let x = s - DEL_LIMIT + 2;
-        let y = s + DEL_LIMIT - 2;
+        let (x, y) = if rev {
+            (s, s + 50)
+        } else {
+            (s - 50, s)
+        };
         AABB::from_corners([x, 0], [y, 1])
     }
 }

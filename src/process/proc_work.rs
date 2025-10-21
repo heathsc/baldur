@@ -9,7 +9,7 @@ pub struct ProcWork<'a> {
     pub depth: Depth,
     pub qual_hist: Qhist,
     pub ctxt_hist: [Qhist; N_CTXT],
-    pub dels: Option<Deletions>,
+    pub dels: Option<Deletions<'a>>,
 }
 
 impl<'a> ProcWork<'a> {

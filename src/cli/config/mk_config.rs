@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::Context;
 use clap::ArgMatches;
 use compress_io::compress::CompressIo;
 use r_htslib::{Hts, HtsHdr};
@@ -13,7 +14,7 @@ use crate::{
     reference::Reference,
 };
 
-use super::{super::Region, Config};
+use super::{super::{Guides, Region}, Config};
 
 impl Config {
     pub fn from_matches(m: &ArgMatches) -> anyhow::Result<(Hts, Self)> {
@@ -79,6 +80,15 @@ impl Config {
             reference.n_contigs()
         );
 
+        let guides = match m.get_one::<PathBuf>("guides") {
+            Some(p) => {
+                let rdr = CompressIo::new().path(p).bufreader()?;
+                debug!("Opened {} for input", p.display());
+                Some(Guides::from_reader(rdr, &reference).with_context(|| "Error while reading guide definitions")?)
+            }
+            None => None,
+        };
+        
         let region = {
             if let Some(reg_str) = m.get_one::<String>("region") {
                 let region = Region::from_str(reg_str, &reference)?;
@@ -139,6 +149,7 @@ impl Config {
                 sample,
                 region,
                 reference,
+                guides,
                 adjust,
                 small_deletion_limit,
                 large_deletion_limit,

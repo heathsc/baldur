@@ -17,7 +17,11 @@ impl DelSet {
         let m = vec![0u64; n_u64 * n].into_boxed_slice();
         Self { m, n_dels }
     }
-
+    
+    pub(super) fn all_dset(&mut self) -> &mut [u64] {
+        &mut self.m
+    }
+    
     pub(super) fn add_index(&mut self, i: usize, k: usize) {
         let n_u64 = calc_n_u64(self.n_dels);
         let (j, x) = get_coords(i);

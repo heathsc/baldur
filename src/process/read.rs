@@ -4,17 +4,20 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use r_htslib::*;
 use compress_io::compress::CompressIo;
+use r_htslib::*;
 
 use crate::{
-    align_store::AlignStore, cli::Config, context::*, process::ProcWork,
+    align_store::AlignStore,
+    cli::{Config, Guide},
+    context::*,
+    process::ProcWork,
 };
 
 use super::deletions::DelType;
 
 const QUAL_SKIP: u8 = 20;
-const MAX_SPLIT: usize = 8;
+const MAX_SPLIT: usize = 16;
 
 fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u8) -> bool {
     let fg = blst[0].flag() & BAM_FREVERSE;
@@ -88,11 +91,27 @@ fn sort_and_filter(blst: &mut [BamRec], pe: bool, reg_tid: usize, mapq_thresh: u
     skip
 }
 
+fn get_rg_tag<'a>(cfg: &'a Config, b: &BamRec) -> Option<&'a Guide> {
+    cfg.guides().and_then(|g| {
+        let tag = b.get_tag("RG");
+        tag.as_ref().and_then(|t| {
+            if t.val_type() == b'Z' {
+                let n = t.value();
+                let l = n.len();
+                assert!(l > 0 && n[l - 1] == 0);
+                std::str::from_utf8(&n[..l - 1]).ok().and_then(|s| g.get(s))
+            } else {
+                None
+            }
+        })
+    })
+}
+
 /// Process the BAM record(s) coming from a single read
-fn handle_read<W: Write, X: Write>(
+fn handle_read<'a, W: Write, X: Write>(
     blst: &mut [BamRec],
-    cfg: &Config,
-    proc_work: &mut ProcWork<'_>,
+    cfg: &'a Config,
+    proc_work: &mut ProcWork<'a>,
     wrt: Option<&mut W>,
     wrt_rej: Option<&mut X>,
 ) -> anyhow::Result<()> {
@@ -107,6 +126,9 @@ fn handle_read<W: Write, X: Write>(
     if !sort_and_filter(blst, pe, reg_tid, cfg.mapq_threshold()) {
         let mut prev = None;
 
+        let guide =
+            get_rg_tag(cfg, &blst[0]).and_then(|g| if g.tid() == reg_tid { Some(g) } else { None });
+
         let mut align_store = AlignStore::new(cfg);
         let mut ins_allele = Vec::new();
         let mut ins_hash: HashMap<usize, (usize, u8)> = HashMap::new();
@@ -115,17 +137,21 @@ fn handle_read<W: Write, X: Write>(
 
         let mut start_end = StartEnd::new();
         let mut largest_del: Option<(usize, usize, bool, DelType)> = None;
-        
+
         let mut check_largest_del = |start: usize, end: usize, rev: bool, dt: DelType| {
             let del_size = start.abs_diff(end);
-            if largest_del.as_ref().map(|s| del_size > s.0.abs_diff(s.1)).unwrap_or(true) {
+            if largest_del
+                .as_ref()
+                .map(|s| del_size > s.0.abs_diff(s.1))
+                .unwrap_or(true)
+            {
                 largest_del = Some((start, end, rev, dt))
-            }    
+            }
         };
-        
+
         // We know all segments are on the same strand as we checked in the sort_and_filter call above
         let reverse = (blst[0].flag() & BAM_FREVERSE) != 0;
-        
+
         for b in blst.iter() {
             let ref_start = b.pos().unwrap();
             let cigar = b.cigar().unwrap();
@@ -283,7 +309,7 @@ fn handle_read<W: Write, X: Write>(
                                 check_largest_del(y, x, true, DelType::Del)
                             } else {
                                 check_largest_del(x, y, false, DelType::Del)
-                            }; 
+                            };
                         }
                         align_store.add(&v, proc_work.ref_seq, proc_work);
                     }
@@ -295,7 +321,7 @@ fn handle_read<W: Write, X: Write>(
             if !pe && reverse {
                 if let Some(x) = prev {
                     if proc_work.dels.is_some() {
-                        check_largest_del(x-1, align_store.pos(), true, DelType::Split)
+                        check_largest_del(x - 1, align_store.pos(), true, DelType::Split)
                     }
                     align_store.fill_to(b's', QUAL_SKIP, x)
                 } else {
@@ -311,11 +337,27 @@ fn handle_read<W: Write, X: Write>(
         if let Some(d) = proc_work.dels.as_mut()
             && let Some((s, e)) = start_end.get()
         {
-            let del_idx = largest_del.take().and_then(|(start, end, rev, dt)| {
-                d.add_del(start, end, rev, dt)
-            });
-            d.add_read_extent(s, e, reverse, del_idx)
-        }
+            let tst_dst = if let Some(g) = guide {
+                let cs = g.cut_site();
+                let x = ((if reverse { e } else { s }) % d.target_size()) as isize;
+                let delta = (x - cs).abs().min((x + (d.target_size() as isize) - cs).abs());
+                // eprintln!("ACK!\t{cs}\t{x}\t{delta}\t{reverse}");
+                delta.abs() < 50
+            } else {
+                true
+            };
+
+            if tst_dst { 
+                let del_idx = largest_del
+                    .take()
+                    .and_then(|(start, end, rev, dt)| d.add_del(start, end, rev, dt));
+                
+                d.add_read_extent(s, e, reverse, del_idx, guide)
+            } else {
+                let b = &blst[0];
+                warn!("Read {} rejected due to large distance from cut site", b.qname()?);
+            }
+        };
 
         if align_store.changed() {
             let depth = &mut proc_work.depth;
@@ -391,7 +433,11 @@ impl StartEnd {
     }
 }
 
-pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> anyhow::Result<()> {
+pub(crate) fn read_file<'a>(
+    hts_file: &mut Hts,
+    cfg: &'a Config,
+    pw: &mut ProcWork<'a>,
+) -> anyhow::Result<()> {
     let reg = cfg.region();
 
     let mut wrt = if cfg.view() {
@@ -408,7 +454,7 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
     } else {
         None
     };
-    
+
     let mut blst = Vec::new();
     for _ in 0..MAX_SPLIT {
         blst.push(BamRec::new()?)
@@ -442,6 +488,6 @@ pub(crate) fn read_file(hts_file: &mut Hts, cfg: &Config, pw: &mut ProcWork) -> 
     if idx > 0 && idx <= MAX_SPLIT {
         handle_read(&mut blst[0..idx], cfg, pw, wrt.as_mut(), wrt_rej.as_mut())?
     }
-    
+
     Ok(())
 }

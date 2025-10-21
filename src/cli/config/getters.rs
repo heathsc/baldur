@@ -1,6 +1,6 @@
 use crate::reference::Reference;
 
-use super::{Config, Region, super::ThresholdType};
+use super::{Config, Guides, Region, super::ThresholdType};
 
 use crate::model::N_QUAL;
 
@@ -112,5 +112,9 @@ impl Config {
 
     pub fn rs(&self, x: usize) -> Option<&str> {
         self.rs.as_ref().and_then(|h| h.get(&x).map(|s| s as &str))
+    }
+    
+    pub fn guides(&self) -> Option<&Guides> {
+        self.guides.as_ref()
     }
 }
