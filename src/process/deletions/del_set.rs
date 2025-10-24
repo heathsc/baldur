@@ -107,4 +107,8 @@ impl ReadDels {
     pub(super) fn del_mask(&self) -> DelSet {
         DelSet::mask(self.n_dels)
     }
+    
+    pub(super) fn n_dels(&self) -> usize {
+        self.n_dels
+    }
 }

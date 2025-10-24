@@ -18,7 +18,7 @@ impl RTreeObject for Deletion {
     }
 }
 
-impl <'a>Deletions<'a> {
+impl<'a> Deletions<'a> {
     fn build_rtree(&mut self) -> Option<(RTree<Deletion>, usize)> {
         debug!("Building RTree from deletions");
         self.del_hash.take().map(|dh| {
@@ -46,7 +46,7 @@ impl <'a>Deletions<'a> {
 /// Collect contributions to likelihood for the iterative steps
 ///
 /// Observed deletions contributes counts for each deletion while reads with no observed deletions
-/// controbute counts to all deletions that are not covered by the reads
+/// contribute counts to all deletions that are not covered by the reads
 fn collect_contrib(
     n_dels: usize,
     rt: &RTree<Deletion>,
@@ -60,7 +60,7 @@ fn collect_contrib(
     // Index for wildtype allele
     let wildtype = n_dels;
 
-    // Add a dummy observation for the wildtype allele so that tje mle whould be >0
+    // Add a dummy observation for the wildtype allele so that the mle whould be >0
     obs_counts[wildtype] = (0, 1);
     let mut read_dels = ReadDels::new(n_dels);
     let mask = read_dels.del_mask();
@@ -86,8 +86,8 @@ fn collect_contrib(
         for (m0, m1) in d0.iter_mut().zip(d1.iter()) {
             // Turn off bits (dels) in the observed set that are also in the excluded set
             *m0 ^= *m0 & *m1
-        } 
-    
+        }
+
         // Set non-observed set as the complement of the union of the contained and excluded sets
         let (d0, d2) = ds.all_dset().split_at_mut(2 * k);
         let msk = mask.dset(0);
@@ -147,13 +147,15 @@ fn get_contained_dels(
 }
 
 fn get_excluded_dels(rt: &RTree<Deletion>, r: &ReadExtent, ds: &mut DelSet) {
-    
     let (bb1, bb2) = if let Some(g) = r.guide {
         g.get_bb(r.reversed(), r.target_size)
     } else {
-        (get_bb_from_point(r.physical_start(), r.reversed()),get_bb_from_point(r.physical_start() + r.target_size, r.reversed()))
+        (
+            get_bb_from_point(r.physical_start(), r.reversed()),
+            get_bb_from_point(r.physical_start() + r.target_size, r.reversed()),
+        )
     };
-    
+
     // Find deletions that overlap
     for d in rt.locate_in_envelope_intersecting(&bb1) {
         let i = d.ix;
@@ -191,16 +193,17 @@ fn get_bb_from_point(s: isize, rev: bool) -> AABB<[isize; 2]> {
     if DEL_LIMIT < 2 {
         AABB::from_point([s, 0])
     } else {
-        let (x, y) = if rev {
-            (s, s + 50)
-        } else {
-            (s - 50, s)
-        };
+        let (x, y) = if rev { (s, s + 50) } else { (s - 50, s) };
         AABB::from_corners([x, 0], [y, 1])
     }
 }
 
-pub fn write_deletions(rt: &RTree<Deletion>, prefix: &str, fq: &[f64]) -> anyhow::Result<()> {
+pub fn write_deletions(
+    rt: &RTree<Deletion>,
+    prefix: &str,
+    fq: &[f64],
+    wt_ci: &[f64; 2],
+) -> anyhow::Result<()> {
     let file_name = format!("{}_del.txt", prefix);
     let mut wrt = BufWriter::new(File::create(&file_name)?);
 
@@ -209,13 +212,15 @@ pub fn write_deletions(rt: &RTree<Deletion>, prefix: &str, fq: &[f64]) -> anyhow
 
     writeln!(wrt, "Start\tEnd\tSize\tType\tIndex\tFwd\tRev\tFreq")?;
     for d in v.into_iter() {
-        writeln!(wrt, "{d}\t{}", fq[d.ix as usize])?;
+        writeln!(wrt, "{d}\t{:.6}", fq[d.ix as usize])?;
     }
     writeln!(
         wrt,
-        "-\t-\t-\t{}\t-\t-\t-\t{}",
+        "-\t-\t-\t{}\t-\t-\t-\t{:.6} ({:.6}-{:.6})",
         DelType::Wildtype,
-        fq.last().unwrap()
+        fq.last().unwrap(),
+        wt_ci[0],
+        wt_ci[1]
     )?;
     Ok(())
 }

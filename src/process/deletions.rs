@@ -2,15 +2,21 @@ use std::{
     cmp::Ordering,
     collections::BTreeMap,
     fmt::{self, Formatter},
+    fs::File,
+    io::{BufWriter, Write},
 };
 
 use rstar::RTree;
 
+mod confidence_intervals;
 mod del_prob;
 mod del_set;
+mod em_max;
 mod rtree;
 
+use confidence_intervals::get_confidence_intervals;
 use del_set::{DelSet, ReadDels, ReadDelSet};
+use em_max::EmParam;
 
 use crate::{cli::Guide, process::deletions::del_prob::calc_del_prob};
 
@@ -269,7 +275,9 @@ impl <'a>Deletions<'a> {
 
 pub struct DeletionWork {
     del_tree: RTree<Deletion>,
-    del_freq: Vec<f64>,
+    del_freq: Box<[f64]>,
+    wt_freq_ci: [f64; 2],
+    prof_like: Vec<(f64, f64)>,
     target_size: usize,
 }
 
@@ -287,16 +295,40 @@ impl DeletionWork {
                 .expect("Problem getting deletion contributions");
 
             // Estimate deletion frequencies
-            let del_freq = read_dels.est_freq(&obs_cts)?;
-            Ok(Some(Self { del_tree, del_freq, target_size }))
+            let mut em_mle = EmParam::new(&read_dels);
+            let lk_max = em_mle.est_freq(&obs_cts)?;
+
+            let mut em_prof = EmParam::new(&read_dels);
+            let mut prof_like = em_prof.calc_profile_like(em_mle.fq().unwrap(),99)?;
+            
+            let (low, hi) = get_confidence_intervals(&em_mle)?;
+            let wt_freq_ci = [low, hi];
+            
+            let (del_freq, _) = em_mle.take();
+            prof_like.push((*del_freq.last().unwrap(), lk_max));
+            prof_like.sort_unstable_by(|(x, _), (y, _)|  x.partial_cmp(y).unwrap());
+
+            
+            Ok(Some(Self { del_tree, wt_freq_ci, del_freq, prof_like, target_size }))
         }
     }
     
     pub fn write_deletions(&self, prefix: &str) -> anyhow::Result<()> {
-        rtree::write_deletions(&self.del_tree, prefix, &self.del_freq)
+        rtree::write_deletions(&self.del_tree, prefix, &self.del_freq, &self.wt_freq_ci)?;
+        write_prof_likelihood(&self.prof_like, prefix)
     }
 
     pub fn get_del_prob(&mut self, x: usize) -> f64 {
         calc_del_prob(x, &self.del_tree, &self.del_freq, self.target_size)
     }
+}
+
+fn write_prof_likelihood(prof_like: &[(f64, f64)], prefix: &str) -> anyhow::Result<()> {
+    let file_name = format!("{}_plike.txt", prefix);
+    let mut wrt = BufWriter::new(File::create(&file_name)?);
+    let max = prof_like.iter().map(|(_, l)| l).max_by(|x, y| x.total_cmp(y)).unwrap();
+    for (x, l) in prof_like.iter() {
+        writeln!(wrt, "{x}\t{l}\t{}", l - max)?;
+    }
+    Ok(())
 }

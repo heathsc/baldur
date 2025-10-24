@@ -19,32 +19,32 @@ pub fn calc_del_prob(x: usize, rt: &RTree<Deletion>, fq: &[f64], target_size: us
 }
 
 impl ReadDels {
-    pub fn est_freq(&self, obs_cts: &[(u64, u64)]) -> anyhow::Result<Vec<f64>> {
-        info!("Estimating deletion frequencies");
-        let nd = obs_cts.len();
-        assert!(nd > 1);
-        let mut fq = calc_initial_freq(obs_cts);
-
-        let mut tmp_dels: Vec<usize> = Vec::with_capacity(nd - 1);
-
-        let mut cts = vec![0.0f64; nd];
-        // gradient vector
-        // let mut g = vec![0.0f64; nd - 1];
-
+    pub(super) fn em_max(
+        &self,
+        cts: &mut [f64],
+        tmp_dels: &mut Vec<usize>,
+        fq: &mut [f64],
+        fix_wt: bool,
+    ) -> anyhow::Result<f64> {
         let mut converged = false;
 
         let mut old_lk: Option<f64> = None;
         // EM steps
         for _ in 0..1000000 {
-            let lk = self.em_update(&mut cts, &mut tmp_dels, &mut fq);
+            let lk = self.em_update(cts, tmp_dels, fq, fix_wt);
 
             let diff = old_lk.take().map(|x| lk - x);
 
-            // eprintln!("{it}\t{lk}\t{diff:?}\t{}\t{}", fq[0], fq[nd - 1]);
-
             // Check convergence
-            if diff.map(|d| d < 1.0e-8).unwrap_or(false) {
+            if diff
+                .map(|d| {
+                    assert!(d >= 0.0, "Bad EM step! {d}");
+                    d < 1.0e-7
+                })
+                .unwrap_or(false)
+            {
                 converged = true;
+                old_lk = Some(lk);
                 break;
             }
 
@@ -54,11 +54,29 @@ impl ReadDels {
         if !converged {
             Err(anyhow!("Deletion frequency estimates did not converge"))
         } else {
-            Ok(fq)
+            Ok(old_lk.unwrap())
         }
     }
 
-    fn em_update(&self, cts: &mut [f64], tmp_dels: &mut Vec<usize>, fq: &mut [f64]) -> f64 {
+    pub fn est_freq(&self, fq: &mut [f64]) -> anyhow::Result<f64> {
+        info!("Estimating deletion frequencies");
+        let nd = fq.len();
+        assert!(nd > 1);
+
+        let mut tmp_dels: Vec<usize> = Vec::with_capacity(nd - 1);
+
+        let mut cts = vec![0.0f64; nd];
+
+        self.em_max(&mut cts, &mut tmp_dels, fq, false)
+    }
+
+    fn em_update(
+        &self,
+        cts: &mut [f64],
+        tmp_dels: &mut Vec<usize>,
+        fq: &mut [f64],
+        fix_wt: bool,
+    ) -> f64 {
         // Initialize tmp storage and likelihood
         let mut lk = 0.0;
         cts.fill(0.0);
@@ -77,36 +95,27 @@ impl ReadDels {
             }
         }
 
-        // Update frequency estimates
-        let z = cts.iter().sum::<f64>();
-
-        for (c, f) in cts.iter().zip(fq.iter_mut()) {
-            *f = *c / z;
+        if fix_wt {
+            let n = fq.len();
+            let fq_wt = fq[n - 1];
+            em_update_freq(&cts[..n - 1], &mut fq[..n - 1], 1.0 - fq_wt);
+        } else {
+            em_update_freq(cts, fq, 1.0)
         }
 
         lk
     }
 }
 
-fn calc_initial_freq(obs_cts: &[(u64, u64)]) -> Vec<f64> {
-    debug!("Get initial frequency estimates");
-    let n = obs_cts.len();
-    let mut fq = Vec::with_capacity(n);
-    let mut t = 0.0;
-    for (a, b) in obs_cts[..n - 1].iter() {
-        let p = *a as f64 / *b as f64;
-        fq.push(p);
-        t += p;
-    }
-    fq.push(t);
+fn em_update_freq(cts: &[f64], fq: &mut [f64], k: f64) {
+    let z = k / cts.iter().sum::<f64>();
 
-    // Rescale
-    for p in fq.iter_mut() {
-        *p /= 2.0 * t
+    for (c, f) in cts.iter().zip(fq.iter_mut()) {
+        *f = *c * z;
     }
-    fq
 }
-/// Get read contributions for observed deletions
+
+/// Get read and likelihood contributions for observed deletions
 fn em_handle_observed_del(ct: f64, ix: usize, cts: &mut [f64], fq: &[f64], excl_fq: f64) -> f64 {
     cts[ix] += ct;
     (fq[ix] / (1.0 - excl_fq)).ln() * ct
@@ -160,9 +169,10 @@ fn em_excl_contrib(
         tmp_dels.push(ix);
         excl_fq += fq[ix];
     });
-    
+
+    let z = ct / (1.0 - excl_fq);
     for i in tmp_dels.drain(..) {
-        cts[i] += ct * fq[i];
+        cts[i] += z * fq[i];
     }
 
     excl_fq
