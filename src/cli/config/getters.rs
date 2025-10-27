@@ -52,6 +52,10 @@ impl Config {
     pub fn view(&self) -> bool {
         self.view
     }
+    
+    pub fn profile_like(&self) -> bool {
+        self.profile_like
+    }
 
     pub fn output_deletions(&self) -> bool {
         self.output_deletions

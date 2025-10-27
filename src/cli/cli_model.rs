@@ -194,6 +194,13 @@ pub(super) fn cli_model() -> Command {
             .help("Output large deletions"),
     )
     .arg(
+        Arg::new("profile_likelihood")
+            .short('p')
+            .action(ArgAction::SetTrue)
+            .long("profile-likelihood")
+            .help("Output profile likelihood for wildtype (no large deletion) frequency"),
+    )
+    .arg(
         Arg::new("output_qual_calib")
             .hide(true)
             .long("output-qual-calib")

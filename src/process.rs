@@ -59,13 +59,13 @@ pub fn process_data(mut hts_file: Hts, cfg: Config) -> anyhow::Result<()> {
 
     let mut del_work = match pw.dels.take() {
         Some(d) => {
-            DeletionWork::new(d).with_context(|| "Error when estimating deletion frequencies")?
+            DeletionWork::new(d, cfg.profile_like()).with_context(|| "Error when estimating deletion frequencies")?
         }
         None => None,
     };
 
     if let Some(dw) = del_work.as_ref() {
-        dw.write_deletions(cfg.output_prefix())?
+        dw.write_deletions(cfg.output_prefix(), cfg.guides())?
     }
     
     let ref_base = |x: usize| BASES.as_bytes()[(ref_seq[x].base()) as usize] as char;

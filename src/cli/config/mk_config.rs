@@ -35,6 +35,7 @@ impl Config {
         let no_call = m.get_flag("no_call");
         let rejected = m.get_flag("rejected");
         let view = m.get_flag("view");
+        let profile_like = m.get_flag("profile-likelihood");
         let output_deletions = m.get_flag("output_deletions");
         let output_qual_calib = m.get_flag("output_qual_calib");
 
@@ -170,6 +171,7 @@ impl Config {
                 output_qual_calib,
                 view,
                 output_deletions,
+                profile_like,
             },
         ))
     }

@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     fmt::{self, Formatter},
     fs::File,
-    io::{BufWriter, Write},
+    io::{self, BufWriter, Write},
 };
 
 use rstar::RTree;
@@ -15,16 +15,19 @@ mod em_max;
 mod rtree;
 
 use confidence_intervals::get_confidence_intervals;
-use del_set::{DelSet, ReadDels, ReadDelSet};
+use del_set::{DelSet, ReadDelSet, ReadDels};
 use em_max::EmParam;
 
-use crate::{cli::Guide, process::deletions::del_prob::calc_del_prob};
+use crate::{
+    cli::{Guide, Guides},
+    process::deletions::del_prob::calc_del_prob,
+};
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum DelType {
     Del,
     Split,
-    Wildtype
+    Wildtype,
 }
 
 impl fmt::Display for DelType {
@@ -50,7 +53,8 @@ pub struct Deletion {
     size: isize,
     dtype: DelType,
     ix: u64,
-    ct: [usize; 2], // Observatons of this deletion on the top and bottom strands
+    ct: [usize; 2],       // Observatons of this deletion on the top and bottom strands
+    guide_mask: [u64; 2], // Bitmask of guide indices for reads showing this deletion on the two strands
 }
 
 impl fmt::Display for Deletion {
@@ -69,6 +73,31 @@ impl fmt::Display for Deletion {
     }
 }
 
+impl Deletion {
+    pub fn write_guides<W: Write>(&self, g: &Guides, w: &mut W) -> io::Result<()> {
+        display_guides(self.guide_mask[0], '+', g, w)?;
+        display_guides(self.guide_mask[1], '-', g, w)
+    }
+}
+
+fn display_guides<W: Write>(mut mask: u64, st: char, g: &Guides, w: &mut W) -> io::Result<()> {
+    let mut first = true;
+    write!(w, "\t")?;
+    let mut ix = 0;
+    while mask != 0 {
+        if (mask & 1) == 1 {
+            if !first {
+                write!(w, ",")?;
+            }
+            write!(w, "{}{st}", g.get_ix(ix).unwrap().name())?;
+            first = false
+        }
+        mask >>= 1;
+        ix += 1;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct ReadExtent<'a> {
     coords: DelCoords,
@@ -78,14 +107,14 @@ pub struct ReadExtent<'a> {
     guide: Option<&'a Guide>,
 }
 
-impl <'a>ReadExtent<'a> {
+impl<'a> ReadExtent<'a> {
     fn new(
         start: isize,
         end: isize,
         reversed: bool,
         obs_deletion: Option<u64>,
         target_size: isize,
-        guide: Option<&'a Guide>
+        guide: Option<&'a Guide>,
     ) -> Self {
         assert!(start < end);
         Self {
@@ -93,7 +122,7 @@ impl <'a>ReadExtent<'a> {
             reversed,
             obs_deletion,
             target_size,
-            guide
+            guide,
         }
     }
 
@@ -115,7 +144,7 @@ impl <'a>ReadExtent<'a> {
     fn reversed(&self) -> bool {
         self.reversed
     }
-    
+
     #[inline]
     fn coords2(&self) -> Option<(isize, isize)> {
         if self.coords.end > self.target_size {
@@ -171,16 +200,18 @@ impl Ord for DelCoords {
 /// large deletions across all reads
 pub struct Deletions<'a> {
     del_hash: Option<BTreeMap<DelCoords, Deletion>>,
+    coord_vec: Vec<DelCoords>,
     read_extents: Option<Vec<ReadExtent<'a>>>,
     min_size: isize,
     target_size: usize,
     adjust: isize,
 }
 
-impl <'a>Deletions<'a> {
+impl<'a> Deletions<'a> {
     pub fn new(target_size: usize, min_size: usize, adjust: usize) -> Self {
         Self {
             del_hash: Some(BTreeMap::new()),
+            coord_vec: Vec::new(),
             read_extents: Some(Vec::new()),
             min_size: min_size as isize,
             adjust: adjust as isize,
@@ -194,6 +225,7 @@ impl <'a>Deletions<'a> {
         end: usize,
         reversed: bool,
         dtype: DelType,
+        guide: Option<&'a Guide>,
     ) -> Option<u64> {
         let s = start as isize - self.adjust;
         let e = end as isize - self.adjust;
@@ -217,19 +249,25 @@ impl <'a>Deletions<'a> {
 
             let dh = self.del_hash.as_mut().unwrap();
             let l: u64 = dh.len().try_into().unwrap();
-            let del = dh.entry(dc).or_insert_with(|| Deletion {
-                coords: dc,
-                size,
-                dtype,
-                ix: l,
-                ct: [0; 2],
+            let del = dh.entry(dc).or_insert_with(|| {
+                self.coord_vec.push(dc);
+                Deletion {
+                    coords: dc,
+                    size,
+                    dtype,
+                    ix: l,
+                    ct: [0; 2],
+                    guide_mask: [0; 2],
+                }
             });
 
-            if reversed {
-                del.ct[1] += 1
-            } else {
-                del.ct[0] += 1
+            let k = if reversed { 1 } else { 0 };
+            del.ct[k] += 1;
+
+            if let Some(j) = guide.map(|g| g.index()) {
+                del.guide_mask[k] |= 1u64 << j
             }
+
             Some(del.ix)
         } else {
             None
@@ -270,25 +308,24 @@ impl <'a>Deletions<'a> {
             .map(|dh| dh.len())
             .unwrap_or_default()
     }
-
 }
 
 pub struct DeletionWork {
     del_tree: RTree<Deletion>,
     del_freq: Box<[f64]>,
     wt_freq_ci: [f64; 2],
-    prof_like: Vec<(f64, f64)>,
+    prof_like: Option<Vec<(f64, f64)>>,
     target_size: usize,
 }
 
 impl DeletionWork {
-    pub fn new(mut dels: Deletions) -> anyhow::Result<Option<Self>> {
+    pub fn new(mut dels: Deletions, profile_like: bool) -> anyhow::Result<Option<Self>> {
         let n_dels = dels.len();
         if n_dels == 0 {
             Ok(None)
         } else {
             let target_size = dels.target_size();
-            
+
             // Get likelihood contributions from reads
             let (obs_cts, read_dels, del_tree) = dels
                 .get_like_data()
@@ -297,25 +334,45 @@ impl DeletionWork {
             // Estimate deletion frequencies
             let mut em_mle = EmParam::new(&read_dels);
             let lk_max = em_mle.est_freq(&obs_cts)?;
+            let df = em_mle.wt_fq();
 
-            let mut em_prof = EmParam::new(&read_dels);
-            let mut prof_like = em_prof.calc_profile_like(em_mle.fq().unwrap(),99)?;
-            
+            let prof_like = if profile_like {
+                let mut em_prof = EmParam::new(&read_dels);
+                let mut prof_like = em_prof.calc_profile_like(em_mle.fq().unwrap(), 99)?;
+                prof_like.push((df.unwrap(), lk_max));
+                prof_like.sort_unstable_by(|(x, _), (y, _)| x.partial_cmp(y).unwrap());
+                Some(prof_like)
+            } else {
+                None
+            };
+
             let (low, hi) = get_confidence_intervals(&em_mle)?;
             let wt_freq_ci = [low, hi];
-            
             let (del_freq, _) = em_mle.take();
-            prof_like.push((*del_freq.last().unwrap(), lk_max));
-            prof_like.sort_unstable_by(|(x, _), (y, _)|  x.partial_cmp(y).unwrap());
 
-            
-            Ok(Some(Self { del_tree, wt_freq_ci, del_freq, prof_like, target_size }))
+            Ok(Some(Self {
+                del_tree,
+                wt_freq_ci,
+                del_freq,
+                prof_like,
+                target_size,
+            }))
         }
     }
-    
-    pub fn write_deletions(&self, prefix: &str) -> anyhow::Result<()> {
-        rtree::write_deletions(&self.del_tree, prefix, &self.del_freq, &self.wt_freq_ci)?;
-        write_prof_likelihood(&self.prof_like, prefix)
+
+    pub fn write_deletions(&self, prefix: &str, guides: Option<&Guides>) -> anyhow::Result<()> {
+        rtree::write_deletions(
+            &self.del_tree,
+            prefix,
+            &self.del_freq,
+            &self.wt_freq_ci,
+            guides,
+        )?;
+        if let Some(pf) = self.prof_like.as_ref() {
+            write_prof_likelihood(pf, prefix)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn get_del_prob(&mut self, x: usize) -> f64 {
@@ -326,7 +383,11 @@ impl DeletionWork {
 fn write_prof_likelihood(prof_like: &[(f64, f64)], prefix: &str) -> anyhow::Result<()> {
     let file_name = format!("{}_plike.txt", prefix);
     let mut wrt = BufWriter::new(File::create(&file_name)?);
-    let max = prof_like.iter().map(|(_, l)| l).max_by(|x, y| x.total_cmp(y)).unwrap();
+    let max = prof_like
+        .iter()
+        .map(|(_, l)| l)
+        .max_by(|x, y| x.total_cmp(y))
+        .unwrap();
     for (x, l) in prof_like.iter() {
         writeln!(wrt, "{x}\t{l}\t{}", l - max)?;
     }

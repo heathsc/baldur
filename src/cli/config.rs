@@ -31,5 +31,6 @@ pub struct Config {
     rejected: bool,
     output_qual_calib: bool,
     view: bool,
+    profile_like: bool,
     output_deletions: bool,
 }

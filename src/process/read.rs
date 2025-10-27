@@ -341,7 +341,6 @@ fn handle_read<'a, W: Write, X: Write>(
                 let cs = g.cut_site();
                 let x = ((if reverse { e } else { s }) % d.target_size()) as isize;
                 let delta = (x - cs).abs().min((x + (d.target_size() as isize) - cs).abs());
-                // eprintln!("ACK!\t{cs}\t{x}\t{delta}\t{reverse}");
                 delta.abs() < 50
             } else {
                 true
@@ -350,7 +349,7 @@ fn handle_read<'a, W: Write, X: Write>(
             if tst_dst { 
                 let del_idx = largest_del
                     .take()
-                    .and_then(|(start, end, rev, dt)| d.add_del(start, end, rev, dt));
+                    .and_then(|(start, end, rev, dt)| d.add_del(start, end, rev, dt, guide));
                 
                 d.add_read_extent(s, e, reverse, del_idx, guide)
             } else {

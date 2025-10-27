@@ -32,7 +32,7 @@ impl ReadDels {
         // EM steps
         for _ in 0..1000000 {
             let lk = self.em_update(cts, tmp_dels, fq, fix_wt);
-
+            // eprintln!("{it}\t{lk}\t{}", fq.last().unwrap());
             let diff = old_lk.take().map(|x| lk - x);
 
             // Check convergence
@@ -94,9 +94,22 @@ impl ReadDels {
                 lk += em_handle_unobserved_del(rd, ct, cts, tmp_dels, fq, excl_fq)
             }
         }
+        let n = fq.len();
+        
+        /* 
+        let n1 = if fix_wt { n - 1 } else { n };
+    
+        lk = cts[..n1]
+            .iter()
+            .zip(fq[..n1].iter())
+            .map(|(p, q)| {
+                let n = *p;
+                if n > 0.0 { q.ln() * n } else { 0.0 }
+            })
+            .sum::<f64>();
+            */
 
         if fix_wt {
-            let n = fq.len();
             let fq_wt = fq[n - 1];
             em_update_freq(&cts[..n - 1], &mut fq[..n - 1], 1.0 - fq_wt);
         } else {
@@ -169,10 +182,11 @@ fn em_excl_contrib(
         tmp_dels.push(ix);
         excl_fq += fq[ix];
     });
-
+    
     let z = ct / (1.0 - excl_fq);
+
     for i in tmp_dels.drain(..) {
-        cts[i] += z * fq[i];
+        cts[i] +=  z * fq[i];
     }
 
     excl_fq
